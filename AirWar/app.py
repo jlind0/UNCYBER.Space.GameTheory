@@ -122,12 +122,12 @@ COHORTS = [
 # ───────── Cohort‑specific presets ─────────
 DEFAULTS = {
     "NATO 5‑Gen": dict(count=25, k=0.07, shares=(0.30, 0.30, 0.25)),
-    "NATO 4‑Gen": dict(count=70, k=0.045, shares=(0.30, 0.30, 0.25)),
-    "Ukraine 4‑Gen": dict(count=40, k=0.035, shares=(0.30, 0.25, 0.25)),
-    "China 5‑Gen": dict(count=15, k=0.08, shares=(0.30, 0.30, 0.25)),
+    "NATO 4‑Gen": dict(count=20, k=0.045, shares=(0.30, 0.30, 0.25)),
+    "Ukraine 4‑Gen": dict(count=30, k=0.035, shares=(0.30, 0.25, 0.25)),
+    "China 5‑Gen": dict(count=20, k=0.08, shares=(0.30, 0.30, 0.25)),
     "China 4‑Gen": dict(count=20, k=0.025, shares=(0.25, 0.30, 0.25)),
     "Russia 5‑Gen": dict(count=10, k=0.065, shares=(0.25, 0.30, 0.25)),
-    "Russia 4‑Gen": dict(count=40, k=0.035, shares=(0.25, 0.30, 0.25)),
+    "Russia 4‑Gen": dict(count=30, k=0.035, shares=(0.25, 0.30, 0.25)),
 }
 
 # ───────── UI helper – shares ─────────
@@ -199,15 +199,15 @@ with st.sidebar:
         shares[tag] = share_sliders(tag, presets.get("shares", (0.25, 0.25, 0.25)))
 
     st.header("Model parameters")
-    horizon = st.slider("Engagement (s)", 30, 600, 180, 10)
+    horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
     dt = 0.2
 
     st.subheader("Logistic remap (E → Ê)")
-    lam_E = st.slider("λ (slope)", 1.0, 10.0, 5.0, 0.5)
-    mid_E = st.slider("mid‑point", 0.1, 1.0, 0.5, 0.05)
+    lam_E = st.slider("λ (slope)", 1.0, 10.0, 1.5, 0.5)
+    mid_E = st.slider("mid‑point", 0.1, 1.0, 1.0, 0.05)
 
     st.subheader("Kill advantage scale σ")
-    sigma = st.slider("σ (steepness)", 1.0, 10.0, 5.0, 0.5)
+    sigma = st.slider("σ (steepness)", 1.0, 10.0, 3.5, 0.5)
 
 # ───────── Calculate effectiveness ─────────
 # Anchor‑ratio scaling: compare every raw E to its family's baseline value
@@ -233,33 +233,28 @@ side_tags = {
 
 
 for i in range(1, steps):
-    # carry forward last tick
-    for t in state:
-        state[t][i] = state[t][i - 1]
+    # carry forward last-tick counts
+    for tag in state:
+        state[tag][i] = state[tag][i - 1]
 
-    # composite fire-power per side  (quantity × lethality × effectiveness)
-    P1 = sum(state[t][i] * kvals[t] * E[t] for t in side_tags["Side 1"])
-    P2 = sum(state[t][i] * kvals[t] * E[t] for t in side_tags["Side 2"])
+    # per-side fire-power  P = Σ (count × k × Ê)
+    P = {
+        side: sum(state[tag][i] * kvals[tag] * E[tag]
+                  for tag in tags)
+        for side, tags in side_tags.items()
+    }
 
-    edge = P1 - P2
-    if abs(edge) < 1e-12:        # parity → nobody hits
-        continue
+    # kill budgets this tick (both sides shoot)
+    K = {side: sigma * P[side] * dt for side in P}
 
-    winner_tags, loser_tags = (
-        (side_tags["Side 1"], side_tags["Side 2"])
-        if edge > 0 else
-        (side_tags["Side 2"], side_tags["Side 1"])
-    )
-
-    # kill budget scales with *relative* edge (0‒1) and winner’s mass
-    rel_edge = abs(edge) / (P1 + P2 + EPS)
-    kills_tot = sigma * rel_edge * sum(state[t][i] for t in winner_tags) * dt
-
-    # spread kills across the losing cohorts
-    loser_total = sum(state[t][i] for t in loser_tags) + EPS
-    for t in loser_tags:
-        share = state[t][i] / loser_total
-        state[t][i] = max(0.0, state[t][i] - share * kills_tot)
+    # apply losses proportionally to the opposite side
+    for side, foe in (("Side 1", "Side 2"), ("Side 2", "Side 1")):
+        foe_total = sum(state[tag][i] for tag in side_tags[foe]) + EPS
+        if foe_total == 0:
+            continue
+        for tag in side_tags[foe]:
+            loss = K[side] * state[tag][i] / foe_total
+            state[tag][i] = max(0.0, state[tag][i] - loss)
 
 
 # ───────── Plot ─────────
