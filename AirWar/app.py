@@ -159,7 +159,7 @@ for i in range(1,steps):
 
 # ───────── Plot ─────────
 fig,ax=plt.subplots()
-styles=['-','--','-.',':','-.','--']
+styles=['-','--','-.',':','-.','--','--']
 for (tag,_,_),sty in zip(COHORTS,styles):
     ax.plot(time,state[tag],label=tag,linestyle=sty,linewidth=2)
 ax.set_xlabel("Time (s)");ax.set_ylabel("Aircraft remaining")
