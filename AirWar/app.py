@@ -131,24 +131,24 @@ GENERIC = {
 }
 
 COHORTS = [
-    ("NATO 5‑Gen", "Side 1", "cobb"),
-    ("NATO 4‑Gen", "Side 1", "cobb"),
-    ("Ukraine 4‑Gen", "Side 1", "power"),
-    ("China 5‑Gen", "Side 2", "ces"),
-    ("China 4‑Gen", "Side 2", "exp"),
-    ("Russia 5‑Gen", "Side 2", "logit"),
-    ("Russia 4‑Gen", "Side 2", "quad"),
+    ("NATO 5-Gen", "Side 1", "cobb"),
+    ("NATO 4-Gen", "Side 1", "cobb"),
+    ("Ukraine 4-Gen", "Side 1", "power"),
+    ("China 5-Gen", "Side 2", "ces"),
+    ("China 4-Gen", "Side 2", "exp"),
+    ("Russia 5-Gen", "Side 2", "logit"),
+    ("Russia 4-Gen", "Side 2", "quad"),
 ]
 
 # ───────── Cohort‑specific presets ─────────
 DEFAULTS = {
-    "NATO 5‑Gen": dict(count=25, k=0.07, shares=(0.30, 0.30, 0.25)),
-    "NATO 4‑Gen": dict(count=20, k=0.045, shares=(0.30, 0.30, 0.25)),
-    "Ukraine 4‑Gen": dict(count=30, k=0.035, shares=(0.30, 0.25, 0.25)),
-    "China 5‑Gen": dict(count=20, k=0.08, shares=(0.30, 0.30, 0.25)),
-    "China 4‑Gen": dict(count=20, k=0.025, shares=(0.25, 0.30, 0.25)),
-    "Russia 5‑Gen": dict(count=10, k=0.065, shares=(0.25, 0.30, 0.25)),
-    "Russia 4‑Gen": dict(count=30, k=0.035, shares=(0.25, 0.30, 0.25)),
+    "NATO 5-Gen":   dict(count=25, k=0.07,  shares=(0.30, 0.30, 0.25), vuln=0.65),
+    "NATO 4-Gen":   dict(count=20, k=0.045, shares=(0.30, 0.30, 0.25), vuln=0.95),
+    "Ukraine 4-Gen":dict(count=30, k=0.035, shares=(0.30, 0.25, 0.25), vuln=1.15),
+    "China 5-Gen":  dict(count=20, k=0.08,  shares=(0.30, 0.30, 0.25), vuln=0.75),
+    "China 4-Gen":  dict(count=20, k=0.025, shares=(0.25, 0.30, 0.25), vuln=1.10),
+    "Russia 5-Gen": dict(count=10, k=0.065, shares=(0.25, 0.30, 0.25), vuln=0.90),
+    "Russia 4-Gen": dict(count=30, k=0.035, shares=(0.25, 0.30, 0.25), vuln=1.25),
 }
 
 # ───────── UI helper – shares ─────────
@@ -218,9 +218,17 @@ with st.sidebar:
         famsel[tag] = st.selectbox(
             f"{tag} family", FAMILIES, FAMILIES.index(dfam), key=f"{tag}-family"
         )
-        shares[tag] = share_sliders(tag, presets.get("shares", (0.25, 0.25, 0.25)))
-        vuln[tag] = st.slider(f"Vulnerability {tag}",
-                           0.5, 1.5, 1.0, 0.05)
+        shares[tag] = share_sliders(
+            tag,
+            presets.get("shares", (0.25, 0.25, 0.25)),
+        )
+        vuln[tag] = st.slider(
+            f"Vulnerability {tag}",
+            0.5,
+            1.5,
+            presets.get("vuln", 1.0),
+            0.05,
+        )
 
     st.header("Model parameters")
     horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
