@@ -253,8 +253,13 @@ with st.sidebar.expander("🛠 Scenario Editor", expanded=False):
     new_nation   = st.selectbox("Nation",   list(st.session_state.nations.keys()), key="new_cohort_nation")
     new_airframe = st.selectbox("Airframe", list(st.session_state.airframes.keys()), key="new_cohort_airframe")
     if st.button("Add Cohort"):
-        st.session_state.cohorts.append((new_nation, new_airframe))
-        st.success(f"Added cohort ({new_nation}, {new_airframe})")
+        candidate = (new_nation, new_airframe)
+        if candidate in st.session_state.cohorts:
+            st.warning(f"Cohort {candidate} already exists.")
+        else:
+            st.session_state.cohorts.append(candidate)
+            st.success(f"Added cohort {candidate}")
+            st.rerun()
 
 for idx, (nation, airframe) in enumerate(st.session_state.cohorts):
     coal  = st.session_state.nations[nation]["coalition"]
@@ -275,6 +280,11 @@ for idx, (nation, airframe) in enumerate(st.session_state.cohorts):
             if k.startswith(prefix):
                 del st.session_state[k]
             st.rerun()
+def _update_family(nation, selectbox_key):
+    # copy the new choice into your nations dict
+    st.session_state.nations[nation]["family"] = st.session_state[selectbox_key]
+    # then force a rerun so everything downstream picks up the new family
+    st.rerun()
 # ───────────── Sidebar ─────────────
 with st.sidebar:
     st.header("Force counts, lethality & families")
@@ -283,12 +293,15 @@ with st.sidebar:
     st.subheader("Aggregation family by nation")
     for nation in st.session_state.nations:
         # grab current, then let user override
+        select_key = f"fam-{nation}"
         curr = st.session_state.nations[nation]["family"]
         new_fam = st.selectbox(
             f"Family for {nation}",
             FAMILIES,
             index=FAMILIES.index(curr),
-            key=f"fam-{nation}"
+            key=select_key,
+            on_change=_update_family,
+            args = (nation, select_key)
         )
         st.session_state.nations[nation]["family"] = new_fam
 
