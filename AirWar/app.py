@@ -635,7 +635,7 @@ with st.sidebar:
                     w: spec["default"]
                     for w, spec in st.session_state.airframe_loadouts.get(airframe, {}).items()
                 }
-            with st.expander(key, expanded=False):
+            with st.expander(f"{key} ({nation}: {airframe})", expanded=False):
                 if st.button("Delete", key=f"delete-{name}"):
                 # 1) remove the cohort tuple itself
                     for ix, (iname, ination, iairframe) in enumerate(st.session_state.cohorts):
