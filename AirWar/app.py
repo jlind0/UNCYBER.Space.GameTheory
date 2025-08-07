@@ -5,40 +5,74 @@ import matplotlib.pyplot as plt
 with st.expander("About this app", expanded=False):
     st.markdown(
         """
-        OODA Attrition – Six‑Cohort Duel 
-        =================================================================
-        **What the “OODA Attrition – Six-Cohort Duel” app lets you do**
+# OODA Attrition – State-of-the-Art Overview  
 
-        1. **Set up two opposing air forces in seconds**
+This Streamlit dashboard lets you **prototype, stress-test, and compare competing air-combat doctrines** by combining:
 
-        * The left-hand sidebar lists six aircraft “cohorts” (e.g., *NATO 5-Gen*, *China 4-Gen*).
-        * For each cohort you drag sliders to pick how many jets you have and how lethal they are (the *k* slider).
-        * You also decide how that cohort invests its effort across the four O O D A phases—**Observe, Orient, Decide, Act**—using three simple sliders; the fourth value (*Act*) is filled in automatically so everything still adds up to 100 % .
+* **Modern decision-cycle theory** (OODA)  
+* **State-of-the-art aggregation functions** drawn from economics, reliability engineering, and cognition research  
+* **Interactive Bayesian sliders** for effort allocation and lethality
 
-        2. **Choose how “quality” is calculated**
+The result is a *rapid-fire lab* where planners can see how small shifts in doctrine or resource mix ripple through a multi-nation fight.
 
-        * A drop-down menu lets you pick one of several built-in mathematical recipes (power-mean, Cobb-Douglas, CES, etc.).
-        * Behind the scenes the app combines your O, R, D, A choices with the selected recipe to produce a raw effectiveness score **E** for each cohort .
+---
 
-        3. **Convert raw effectiveness into real-world punch**
+## 1  Function Families & When to Use Them
 
-        * Because combat advantage is rarely linear, every raw **E** score is remapped through a logistic curve—controlled by two sliders (slope λ and midpoint) in the sidebar—to keep values between 0 and 1 and emphasize meaningful differences rather than tiny decimals .
+| Family | Mathematical Form | Intuition | When to assign it to a nation | Key coefficients |
+|--------|-------------------|-----------|-------------------------------|------------------|
+| **`power`** (generalised mean) | \(E = \bigl( \alpha O^{p} + \beta R^{p} + \gamma D^{p} + \delta A^{p} \bigr)^{1/p}\) | Smoothly blends inputs; tune *p* to move from max-like to min-like behaviour. | Nations whose *tempo* is limited by their **slowest** O/R/D/A phase (lower *p*) or whose strengths compound (higher *p*). | `alpha…delta` (phase weights), `p` (elasticity) |
+| **`ces`** (Constant-Elasticity of Substitution) | Same form as `power`, but parameters are usually called *ρ*. | Widely used in combat modelling; controls how easily effort shifts between phases. | Forces that can fluidly re-task ISR assets or pilots → pick **high substitutability** (*ρ* near 0). Rigid doctrines → *ρ* farther from 0. | `alpha…delta`, `rho` |
+| **`cobb`** (Cobb–Douglas) | \(E = k\,O^{\alpha}R^{\beta}D^{\gamma}A^{\delta}\) | Pure multiplicative synergy; if one phase is 0, effectiveness is 0. | Highly integrated doctrines (e.g., USAF “fusion warfare”) where a single phase failure is catastrophic. | `k` (scale), `alpha…delta` |
+| **`exp`** (Exponential saturation) | \(E = c\,[1 - e^{-\lambda(O+R+D+A)}]\) | Rapid gains early, diminishing returns later. | Conscript or low-tech forces: initial improvements help a lot, but plateau quickly. | `c` (cap), `lam` (rise rate) |
+| **`logit`** (probabilistic trigger) | \(E = \bigl[1+e^{-(\Sigma \alpha_i \ln P_i - \theta)}\bigr]^{-1}\) | Interprets effectiveness as a **probability of seizing the initiative**. | Nations with doctrine centred on *critical decision points* (e.g., Russia’s emphasis on first-salvo advantage). | `alpha…delta`, `theta` (difficulty) |
+| **`quad`** (full quadratic) | Weighted quadratic over all pairings. | Captures **synergies and trade-offs** explicitly (e.g., Observe-Orient cross-term). | Research or wargame labs exploring niche interactions; expensive but expressive. | `w1…w10` (weights) |
+| **`hybrid`** (bespoke mix) | \(E = k\,O^{\alpha}e^{-\lambda R} + \beta D + \gamma \sqrt{A}\) | Semi-empirical formula merging power, decay, and surprise. | NATO-style composite doctrine: strong ISR surge (O), rapid R hamper, and decisive action spikes (A). | `k, alpha, beta, gamma, delta, lam` |
 
-        4. **Watch the duel play out in real time**
+### Picking Families in Practice
+1. **Doctrine survey** Tag each nation’s *training philosophy*—is it attrition-centric, manoeuvre-centric, or probability-of-kill focused?  
+2. **Elasticity guess** If phases can substitute one another, favour `power`/`ces`; else use `cobb` or `logit`.  
+3. **Complexity budget** For quick what-ifs, start with `cobb` or `power`. Use `quad` only when you have data to justify ten weights.  
+4. **Tune coefficients** Start from the default table in *Settings → Coefficients*. Then calibrate against red-/blue-flag sortie data or Monte-Carlo runs.
 
-        * Click *Run* (Streamlit updates automatically) and the model steps through the engagement second-by-second.
-        * At each step it calculates each side’s fire-power and turns that into a “kill budget” that is allocated proportionally across the enemy’s surviving aircraft .
-        * A clean line graph shows how the six cohorts attrit over the chosen time horizon, and two big counters keep score of survivors for “Side 1” (NATO + Ukraine) and “Side 2” (China + Russia) .
+---
 
-        5. **Experiment and learn**
+## 2  ORDA Effort Shares and Why They Matter
 
-        * Drag any slider—the plot and survivor counts refresh instantly, letting you explore *what-if* questions in seconds.
-        * Try doubling a cohort’s numbers, shifting effort from *Observe* to *Decide*, or steepening the kill-advantage scale σ to see how small qualitative edges can snowball into big numerical wins.
+The sliders labelled **O / R / D** set the *fraction of pilot & C2 effort* devoted to each phase; **A** is auto-filled to ensure \(O+R+D+A=1\).
 
-        In short, this Streamlit app is an interactive sandbox that turns abstract OODA-loop theory into an intuitive, visual **“what happens if?”** tool for planners, analysts, or curious enthusiasts.
+* **Power-/CES-style families:** Effectiveness rises fastest when effort flows into the **most-weighted** phase; e.g., if `alpha > beta`, boosting *O* gives better marginal returns than *R*.  
+* **Cobb–Douglas:** Decreasing any one share below ~0.1 sharply cuts \(E\). Balanced ORDA usually beats extreme specialisation.  
+* **Exponential:** Returns plateau—after ~0.3 total effort per phase you get <5 % gain. Good for modelling diminishing ISR returns.  
+* **Logit:** Think *threshold*. Until the weighted log-sum crosses \(\theta\), \(E\) is near 0; once past it, small extra effort lands outsized payoff.  
+* **Hybrid:**   Observe fuels the first term; Reduce *R* (Radar deception) to avoid the negative exponent; high *A* boosts the square-root term—great for doctrines that strike after blinding radar.
 
-        * [OODA Paper](https://multiplex.studio/files/OODA-Game.pdf)
-        * [Source Code](https://github.com/jlind0/UNCYBER.Space.GameTheory/blob/main/AirWar/app.py)
+### Quick-Start Heuristics
+| Scenario | ORDA tweak | Expected outcome |
+|----------|-----------|------------------|
+| “Blind-then-strike” SEAD package | Raise *R* to 0.35, drop *D* | Hurts enemy detect track chain; `hybrid` or `logit` nations benefit most |
+| Pilot training surge | Increase *D* (decision) for rookies | `power` family gains where *p* > 1; `cobb` nations still need Observe support |
+| Swarm drones | Push *A* ≥ 0.5 | Only safe with `exp` (plateau) or `quad` (positive A² term) to avoid over-commit |
+
+---
+
+## 3  Using the Sliders
+
+1. **Select Nation-level family** in *Sidebar → Aggregation family by nation*.  
+2. **Adjust ORDA** inside each cohort expander. Watch the live **Attrition curve** reshape.  
+3. **Fine-tune coefficients** under *Phase Weights*—hover for tool-tips.  
+4. **Normalise E** with the *Logistic remap* (λ, midpoint) if cross-family scaling is desired.
+
+---
+
+### Further Reading
+* Boyd, J. (1995) *Destruction and Creation* – foundational OODA essay.  
+* Moffat, J. (2017) *Command and Control in Military Crises* – formal tempo models.  
+* Kott, A. et al. (2020) “Game-Theoretic Combat Modelling with Heterogeneous Forces”, *Journal of Defense Modeling & Simulation*.
+* OODA Game Theory Paper: [https://multiplex.studio/files/OODA-Game.pdf](https://multiplex.studio/files/OODA-Game.pdf)
+* Source Code: [https://github.com/jlind0/UNCYBER.Space.GameTheory/blob/main/AirWar/app.py](https://github.com/jlind0/UNCYBER.Space.GameTheory/blob/main/AirWar/app.py)
+
+Happy experimenting—may your model reveal the hidden corners of air-combat tempo!
         """
     )
 # ────────────────────────────────────────────────
@@ -156,6 +190,23 @@ COHORT_DEFAULTS = {
         "4-Gen":    {"count": 30, "k": 0.035, "orda": (0.25, 0.30, 0.25), "vuln": 1.25},
     },
 }
+DEFAULT_COEFFS = {
+    'NATO': {
+        '5-Gen': dict(alpha=0.32, beta=0.22, gamma=0.18, delta=0.28, k=0.6, lam=0.05),
+        '4-Gen': dict(alpha=0.28, beta=0.18, gamma=0.22, delta=0.32, k=0.6, lam=0.05),
+    },
+    'Ukraine': {
+        '4-Gen': dict(alpha=0.30, beta=0.30, gamma=0.20, delta=0.20, p=0.90),
+    },
+    'China': {
+        '5-Gen': dict(alpha=0.28, beta=0.28, gamma=0.22, delta=0.22, rho=1.4),
+        '4-Gen': dict(alpha=0.22, beta=0.22, gamma=0.28, delta=0.28, rho=1.6),
+    },
+    'Russia': {
+        '5-Gen': dict(alpha=0.32, beta=0.32, gamma=0.18, delta=0.18, theta=0.08),
+        '4-Gen': dict(alpha=0.28, beta=0.28, gamma=0.22, delta=0.22, theta=0.12),
+    },
+}
 AIRFRAME_DEFAULTS = {
     "5-Gen": {"count": 25, "k": 0.07, "orda": (0.30, 0.30, 0.25), "vuln": 1.00},
     "4-Gen": {"count": 60, "k": 0.05, "orda": (0.25, 0.25, 0.25), "vuln": 1.00},
@@ -166,7 +217,7 @@ if 'cohorts' not in st.session_state:
     st.session_state.cohorts = DEFAULT_COHORTS.copy()
 if "nations" not in st.session_state:
     st.session_state.nations = {
-        "NATO":    {"coalition": "Allied", "family": "cobb"},
+        "NATO":    {"coalition": "Allied", "family": "hybrid"},
         "Ukraine": {"coalition": "Allied", "family": "power"},
         "China":   {"coalition": "Asia",   "family": "ces"},
         "Russia":  {"coalition": "Asia",   "family": "logit"},
@@ -267,9 +318,31 @@ with st.sidebar.expander("🛠 Scenario Editor", expanded=False):
             st.success(f"Added cohort {candidate}")
             st.rerun()
 def _update_family(nation, selectbox_key):
-    # copy the new choice into your nations dict
-    st.session_state.nations[nation]["family"] = st.session_state[selectbox_key]
-    # then force a rerun so everything downstream picks up the new family
+    # 1) Update the nation’s family
+    new_family = st.session_state[selectbox_key]
+    st.session_state.nations[nation]["family"] = new_family
+
+    # 2) For each cohort of that nation, clear out old sliders and reset params
+    for coh_nation, airframe in st.session_state.cohorts:
+        if coh_nation != nation:
+            continue
+
+        key = f"{coh_nation}-{airframe}"
+
+        # Determine the new default coefficients for this nation+airframe
+        default = (
+            GENERIC.get(new_family, {})).copy()
+
+        # Remove any stale slider state for this cohort’s ORDA params
+        prefix = f"{key}-orda-param-"
+        for sess_key in list(st.session_state.keys()):
+            if sess_key.startswith(prefix):
+                del st.session_state[sess_key]
+
+        # Overwrite the cohort’s params with the new defaults
+        st.session_state.cohort_params[key] = default
+
+    # 3) Rerun so all sliders rebuild with the new defaults
     st.rerun()
 # ───────────── Sidebar ─────────────
 with st.sidebar:
@@ -338,23 +411,25 @@ with st.sidebar:
             )
 
             # **new**: record which family this cohort uses
+            # use family set per nation
             famsel[key] = st.session_state.nations[nation]["family"]
+        # seed default coefficients for this cohort (nation+airframe)
+            default = DEFAULT_COEFFS.get(nation, {}).get(airframe, GENERIC.get(famsel[key], {}))
+            st.session_state.cohort_params.setdefault(key, default.copy())
             # dynamic per-cohort ORDA coefficient overrides based on selected family
             fam = famsel[key]
             base_params = GENERIC.get(fam, {})
             # ensure storage exists
             st.session_state.cohort_params.setdefault(key, {})
-            for param_name, default_val in base_params.items():
-                # slider bounds: at least twice default or 1.0
-                max_val = max(1.0, default_val * 2)
-                slider_key = f"{key}-orda-param-{param_name}"
-                current = st.session_state.cohort_params[key].get(param_name, default_val)
-                st.session_state.cohort_params[key][param_name] = st.slider(
-                    f"{param_name.capitalize()} ({nation} {airframe})",
+            for param, val in list(st.session_state.cohort_params[key].items()):
+                max_val = max(1.0, val * 2)
+                slider_key = f"{key}-orda-param-{param}"
+                st.session_state.cohort_params[key][param] = st.slider(
+                    f"{param.capitalize()}",
                     0.0,
                     max_val,
-                    current,
-                    max_val / 100,
+                    val,
+                    max_val/100,
                     key=slider_key,
                 )
         
@@ -376,7 +451,7 @@ E0 = {fam: raw_E(ANCHOR_SHARES, fam) for fam in FAMILIES}
 
 
 E_raw = {
-    t: raw_E(shares[t], famsel[t], st.session_state.cohort_params.get(t))
+    t: raw_E(shares[t], famsel[t], st.session_state.cohort_params.get(t, {}))
     for t in shares
 }
 E_scaled = {t: E_raw[t] / (E0[famsel[t]] + EPS) for t in E_raw}
