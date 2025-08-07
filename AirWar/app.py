@@ -475,13 +475,30 @@ with st.sidebar:
         for nat in sorted(st.session_state.bases):
             with st.expander(nat, expanded=False):
                 for bname, (lat, lon) in list(st.session_state.bases[nat].items()):
-                    col1, col2, col3 = st.columns((4, 2, 2))
-                    with col1:
-                        st.text_input("Name", bname, key=f"bname-{nat}-{bname}", disabled=True)
+                    st.text_input("Name", bname, key=f"bname-{nat}-{bname}", disabled=True)
+                    e_lat_key = f"blat-{nat}-{bname}"
+                    e_long_key = f"blon-{nat}-{bname}"
+                    
+                    st.session_state.setdefault(e_lat_key, lat)
+                    st.session_state.setdefault(e_long_key, lon)
+                    me = folium.Map(location=[st.session_state[e_lat_key], st.session_state[e_long_key ]], zoom_start=10)
+                    folium.Marker(
+                        [st.session_state[e_lat_key], st.session_state[e_long_key]],
+                        popup=f"{bname}",
+                        icon=folium.Icon(icon="map-pin", prefix="fa")
+                    ).add_to(me)
+                    folium.LatLngPopup().add_to(me)
+                    oute = st_folium(me, height=250, width=400, key=f"mape-{nat}-{bname}")
+
+                    # If the user clicks this run → write to session_state THEN rerun
+                    if oute and oute.get("last_clicked"):
+                        st.session_state[e_lat_key] = oute["last_clicked"]["lat"]
+                        st.session_state[e_long_key ] = oute["last_clicked"]["lng"]
+                    col2, col3 = st.columns((4, 4))
                     with col2:
-                        st.number_input("Lat", value=lat, key=f"blat-{nat}-{bname}")
+                        st.number_input("Lat", value=lat, key=e_lat_key)
                     with col3:
-                        st.number_input("Lon", value=lon, key=f"blon-{nat}-{bname}")
+                        st.number_input("Lon", value=lon, key=e_long_key )
                 with st.expander("Add Air Base", expanded=False):
                     # add a new base for this nation
                     new_bn = st.text_input("New base name", key=f"newbase-{nat}")
