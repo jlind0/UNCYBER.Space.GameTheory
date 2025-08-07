@@ -130,28 +130,84 @@ GENERIC = {
     ),
     "hybrid": dict(k=0.6, alpha=0.3, beta=0.2, gamma=0.2, delta=0.3, lam=0.05),
 }
-
-COHORTS = [
-    ("NATO 5-Gen", "Side 1", "cobb"),
-    ("NATO 4-Gen", "Side 1", "cobb"),
-    ("Ukraine 4-Gen", "Side 1", "power"),
-    ("China 5-Gen", "Side 2", "ces"),
-    ("China 4-Gen", "Side 2", "exp"),
-    ("Russia 5-Gen", "Side 2", "logit"),
-    ("Russia 4-Gen", "Side 2", "quad"),
+DEFAULT_COHORTS = [
+    ("NATO", "5-Gen"),
+    ("NATO", "4-Gen"),
+    ("Ukraine", "4-Gen"),
+    ("China", "5-Gen"),
+    ("China", "4-Gen"),
+    ("Russia", "5-Gen"),
+    ("Russia", "4-Gen"),
 ]
-
-# ───────── Cohort‑specific presets ─────────
-DEFAULTS = {
-    "NATO 5-Gen":   dict(count=25, k=0.07,  shares=(0.30, 0.30, 0.25), vuln=0.65),
-    "NATO 4-Gen":   dict(count=20, k=0.045, shares=(0.30, 0.30, 0.25), vuln=0.95),
-    "Ukraine 4-Gen":dict(count=30, k=0.035, shares=(0.30, 0.25, 0.25), vuln=1.15),
-    "China 5-Gen":  dict(count=20, k=0.08,  shares=(0.30, 0.30, 0.25), vuln=0.75),
-    "China 4-Gen":  dict(count=20, k=0.025, shares=(0.25, 0.30, 0.25), vuln=1.10),
-    "Russia 5-Gen": dict(count=10, k=0.065, shares=(0.25, 0.30, 0.25), vuln=0.90),
-    "Russia 4-Gen": dict(count=30, k=0.035, shares=(0.25, 0.30, 0.25), vuln=1.25),
+COHORT_DEFAULTS = {
+    "NATO": {
+        "5-Gen":    {"count": 25, "k": 0.07,  "orda": (0.30, 0.30, 0.25), "vuln": 0.65},
+        "4-Gen":    {"count": 20, "k": 0.045, "orda": (0.30, 0.30, 0.25), "vuln": 0.95},
+    },
+    "Ukraine": {
+        "4-Gen":    {"count": 30, "k": 0.035, "orda": (0.30, 0.25, 0.25), "vuln": 1.15},
+    },
+    "China": {
+        "5-Gen":    {"count": 20, "k": 0.08,  "orda": (0.30, 0.30, 0.25), "vuln": 0.75},
+        "4-Gen":    {"count": 20, "k": 0.025, "orda": (0.25, 0.30, 0.25), "vuln": 1.10},
+    },
+    "Russia": {
+        "5-Gen":    {"count": 10, "k": 0.065, "orda": (0.25, 0.30, 0.25), "vuln": 0.90},
+        "4-Gen":    {"count": 30, "k": 0.035, "orda": (0.25, 0.30, 0.25), "vuln": 1.25},
+    },
 }
+AIRFRAME_DEFAULTS = {
+    "5-Gen": {"count": 25, "k": 0.07, "orda": (0.30, 0.30, 0.25), "vuln": 1.00},
+    "4-Gen": {"count": 60, "k": 0.05, "orda": (0.25, 0.25, 0.25), "vuln": 1.00},
+}
+if 'cohorts' not in st.session_state:
+    st.session_state.cohorts = DEFAULT_COHORTS.copy()
+if "nations" not in st.session_state:
+    st.session_state.nations = {
+        "NATO":    {"coalition": "Allied", "family": "cobb"},
+        "Ukraine": {"coalition": "Allied", "family": "power"},
+        "China":   {"coalition": "Asia",   "family": "ces"},
+        "Russia":  {"coalition": "Asia",   "family": "logit"},
+    }
 
+if "airframes" not in st.session_state:
+    st.session_state.airframes = {
+        "5-Gen": {"count": 25, "k": 0.07, "vuln": 0.75, "orda": (0.30, 0.30, 0.25)},
+        "4-Gen": {"count": 60, "k": 0.05, "vuln": 1.00, "orda": (0.25, 0.25, 0.25)},
+    }
+
+# 2) Sidebar: add nations
+with st.sidebar.expander("➕ Add Nation", expanded=False):
+    new_nat = st.text_input("Nation name", key="new_nation_name")
+    coal   = st.text_input("Coalition",  key="new_nation_coal")
+    fam    = st.selectbox("Family", ["cobb","power","ces","logit"], key="new_nation_fam")
+    if st.button("Create Nation"):
+        if new_nat and new_nat not in st.session_state.nations:
+            st.session_state.nations[new_nat] = {"coalition": coal, "family": fam}
+            st.success(f"Added nation “{new_nat}”")
+        else:
+            st.error("Enter a unique nation name.")
+
+# 3) Sidebar: add airframes
+with st.sidebar.expander("➕ Add Airframe", expanded=False):
+    new_af     = st.text_input("Airframe label (e.g. “6-Gen”)", key="new_af_name")
+    cnt        = st.number_input("Default count", min_value=0, max_value=500, value=10, step=1, key="new_af_cnt")
+    k_val      = st.number_input("Default k",    min_value=0.0, max_value=1.0, value=0.05, step=0.01, key="new_af_k")
+    vuln_val   = st.number_input("Default vuln", min_value=0.0, max_value=2.0, value=1.0, step=0.05, key="new_af_vuln")
+    orda_A     = st.slider("O", 0.0, 1.0, 0.3, 0.01, key="new_af_ordaA")
+    orda_R     = st.slider("R", 0.0, 1.0, 0.3, 0.01, key="new_af_ordaR")
+    orda_D     = st.slider("D", 0.0, 1.0, 0.25,0.01, key="new_af_ordaD")
+    if st.button("Create Airframe"):
+        if new_af and new_af not in st.session_state.airframes:
+            # normalize ORDA if it doesn't sum to 1
+            total = orda_A+orda_R+orda_D
+            shares = (orda_A/total, orda_R/total, orda_D/total)
+            st.session_state.airframes[new_af] = {
+                "count": cnt, "k": k_val, "vuln": vuln_val, "orda": shares
+            }
+            st.success(f"Added airframe “{new_af}”")
+        else:
+            st.error("Enter a unique airframe label.")
 # ───────── UI helper – shares ─────────
 def share_sliders(tag: str, tbl=(0.25, 0.25, 0.25), pfx: str = ""):
     """Expose O-, R-, D-sliders; A is auto-computed as 1-(O+R+D)."""
@@ -190,47 +246,89 @@ def raw_E(shares, fam):
 def logistic_remap(val: float, lam: float = 5.0, mid: float = 0.5) -> float:
     """Bound *val* to (0,1) using a logistic centred on *mid* with slope *lam*."""
     return 1.0 / (1.0 + exp(-lam * (val - mid)))
+if 'cohorts' not in st.session_state:
+    st.session_state.cohorts = DEFAULT_COHORTS.copy()
+with st.sidebar.expander("🛠 Scenario Editor", expanded=False):
+    st.write("Add a new cohort (nation + airframe):")
+    new_nation   = st.selectbox("Nation",   list(st.session_state.nations.keys()), key="new_cohort_nation")
+    new_airframe = st.selectbox("Airframe", list(st.session_state.airframes.keys()), key="new_cohort_airframe")
+    if st.button("Add Cohort"):
+        st.session_state.cohorts.append((new_nation, new_airframe))
+        st.success(f"Added cohort ({new_nation}, {new_airframe})")
 
+for idx, (nation, airframe) in enumerate(st.session_state.cohorts):
+    coal  = st.session_state.nations[nation]["coalition"]
+    fam   = st.session_state.nations[nation]["family"]
+    cols  = st.columns((3, 1))
+
+    # show “Nation (coalition, family) – Airframe”
+    cols[0].write(f"{nation} ({coal}, {fam}) — {airframe}")
+
+    # delete button keyed by both nation & airframe
+    if cols[1].button("Delete", key=f"delete-{nation}-{airframe}"):
+        # 1) remove the cohort tuple itself
+        st.session_state.cohorts.pop(idx)
+
+        # 2) remove any widgets/session keys tied to this cohort
+        prefix = f"{nation}-{airframe}"
+        for k in list(st.session_state.keys()):
+            if k.startswith(prefix):
+                del st.session_state[k]
+            st.rerun()
 # ───────────── Sidebar ─────────────
 with st.sidebar:
-    st.header("Force counts & lethality k")
+    st.header("Force counts, lethality & families")
+
+    # ————————————— Aggregation families (per nation) —————————————
+    st.subheader("Aggregation family by nation")
+    for nation in st.session_state.nations:
+        # grab current, then let user override
+        curr = st.session_state.nations[nation]["family"]
+        new_fam = st.selectbox(
+            f"Family for {nation}",
+            FAMILIES,
+            index=FAMILIES.index(curr),
+            key=f"fam-{nation}"
+        )
+        st.session_state.nations[nation]["family"] = new_fam
+
+    # —————————— now your existing counts/k/kvals/shares/vulns loops ——————————
     counts = {}
-    kvals = {}
+    kvals  = {}
     famsel = {}
     shares = {}
-    vuln = {}
+    vulns  = {}
 
-    for tag, side, dfam in COHORTS:
-        presets = DEFAULTS.get(tag, {})
-        counts[tag] = st.slider(
-            f"{tag} count",
-            0,
-            200,
-            presets.get("count", 60),
-            1,
-        )
-        kvals[tag] = st.slider(
-            f"k {tag}",
-            0.0,
-            0.2,
-            presets.get("k", 0.05),
-            0.01,
-        )
-        famsel[tag] = st.selectbox(
-            f"{tag} family", FAMILIES, FAMILIES.index(dfam), key=f"{tag}-family"
-        )
-        shares[tag] = share_sliders(
-            tag,
-            presets.get("shares", (0.25, 0.25, 0.25)),
-        )
-        vuln[tag] = st.slider(
-            f"Vulnerability {tag}",
-            0.5,
-            1.5,
-            presets.get("vuln", 1.0),
-            0.05,
+    for nation, airframe in st.session_state.cohorts:
+        
+        presets = (
+            COHORT_DEFAULTS
+              .get(nation, {})
+              .get(airframe, AIRFRAME_DEFAULTS[airframe])
         )
 
+        key = f"{nation}-{airframe}"
+        with st.expander(key, expanded=False):
+            
+            counts[key] = st.slider(
+                f"{nation} {airframe} count", 0, 200,
+                presets["count"], 1, key=f"{key}-count"
+            )
+            kvals[key] = st.slider(
+                f"k ({nation} {airframe})", 0.0, 0.2,
+                presets["k"], 0.01, key=f"{key}-k"
+            )
+            shares[key] = share_sliders(
+                f"{nation} {airframe}", presets["orda"], pfx=""
+            )
+            vulns[key] = st.slider(
+                f"Vulnerability ({nation} {airframe})", 0.5, 1.5,
+                presets["vuln"], 0.05, key=f"{key}-vuln"
+            )
+
+            # **new**: record which family this cohort uses
+            famsel[key] = st.session_state.nations[nation]["family"]
+        
     st.header("Model parameters")
     horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
     dt = 0.2
@@ -247,7 +345,10 @@ with st.sidebar:
 ANCHOR_SHARES = (0.25, 0.25, 0.25, 0.25)
 E0 = {fam: raw_E(ANCHOR_SHARES, fam) for fam in FAMILIES}
 
-E_raw = {t: raw_E(shares[t], famsel[t]) for t, _, _ in COHORTS}
+E_raw = {
+    t: raw_E(shares[t], famsel[t])
+    for t in shares
+}
 E_scaled = {t: E_raw[t] / (E0[famsel[t]] + EPS) for t in E_raw}
 E = {t: logistic_remap(E_scaled[t], lam_E, mid_E) for t in E_scaled}
 
@@ -255,14 +356,20 @@ E = {t: logistic_remap(E_scaled[t], lam_E, mid_E) for t in E_scaled}
 # ───────── Simulation arrays ─────────
 steps = int(horizon / dt) + 1
 _time = np.linspace(0, horizon, steps)
-state = {t: np.empty(steps) for t, _, _ in COHORTS}
+# create state arrays for each cohort in the dynamic list
+state = {
+    f"{nation}-{airframe}": np.empty(steps)
+    for nation, airframe in st.session_state.cohorts
+}
+
 for t in state:
     state[t][0] = counts[t]
 
-side_tags = {
-    "Side 1": [t for t, s, _ in COHORTS if s == "Side 1"],
-    "Side 2": [t for t, s, _ in COHORTS if s == "Side 2"],
-}
+side_tags = {}
+for nation, airframe in st.session_state.cohorts:
+    key = f"{nation}-{airframe}"
+    coal = st.session_state.nations[nation]["coalition"]
+    side_tags.setdefault(coal, []).append(key)
 
 
 for i in range(1, steps):
@@ -279,28 +386,44 @@ for i in range(1, steps):
 
     # kill budgets this tick (both sides shoot)
     K = {side: sigma * P[side] * dt for side in P}
-
+    sides = list(side_tags.keys())
     # apply losses proportionally to the opposite side
-    for side, foe in (("Side 1", "Side 2"), ("Side 2", "Side 1")):
-        foe_total = sum(state[tag][i] * vuln[tag]
-            for tag in side_tags[foe]) + EPS
-        
-        if foe_total == 0:
-            continue
-        for tag in side_tags[foe]:
-            hits = K[side] * (state[tag][i] * vuln[tag]) / foe_total
-            loss = hits * vuln[tag]
-            state[tag][i] = max(0.0, state[tag][i] - loss)
+    for side in sides:
+        for foe in sides:
+            if foe == side:
+                continue
+            foe_total = sum(
+                state[tag][i] * vulns[tag]
+            for tag in side_tags[foe]
+            ) + EPS
+    # total enemy pressure from "foe" on "side"
+            attr_rate = sum(
+                E[enemy] * state[enemy][i]
+                for enemy in side_tags[foe]
+            )
+            
+            if foe_total == 0:
+                continue
+            for tag in side_tags[foe]:
+                effective_K = K[side] * (attr_rate / (sum(state[e][i] for e in side_tags[foe]) + EPS))
+                hits = hits = effective_K * (state[tag][i] * vulns[tag]) / foe_total
+                loss = hits * vulns[tag]
+                state[tag][i] = max(0.0, state[tag][i] - loss)
 
 
 # ───────── Plot ─────────
 fig, ax = plt.subplots()
+from itertools import cycle
 styles = ["-", "--", "-.", ":", "dashdot", "dotted", (0, (3, 1, 1, 1))]
-for (tag, _, _), sty in zip(COHORTS, styles):
-    ax.plot(_time, state[tag], label=tag, linestyle=sty, linewidth=2)
-ax.set_xlabel("Time (s)")
+style_iter = cycle(styles)
+ # Plot each cohort series; will re-run automatically when cohorts change
+for nation, airframe in st.session_state.cohorts:
+    key = f"{nation}-{airframe}"
+    sty = next(style_iter)
+    ax.plot(_time, state[key], label=key, linestyle=sty, linewidth=2)
+ax.set_xlabel("Itterations")
 ax.set_ylabel("Aircraft remaining")
-ax.set_title("Attrition – Six‑Cohort Duel (Logistic Δ‑based kills)")
+ax.set_title("Attrition – (Logistic Δ‑based kills)")
 ax.legend()
 st.pyplot(fig)
 
@@ -308,13 +431,8 @@ st.pyplot(fig)
 side1_name = "NATO⁺UKR"
 side2_name = "CHN⁺RUS"
 
-s1_end = sum(state[t][-1] for t in side_tags["Side 1"])
-s2_end = sum(state[t][-1] for t in side_tags["Side 2"])
-col1, col2 = st.columns(2)
-col1.metric("Side 1 survivors", f"{s1_end:.1f} ({side1_name})")
-col2.metric("Side 2 survivors", f"{s2_end:.1f} ({side2_name})")
-
-st.caption(
-    "Remapped effectiveness via anchor‑ratio logistic mapping + magnitude‑advantage kills. ✈️🧮 #vibecoding"
-)
-
+ # compute survivors for each side dynamically
+metrics = {coal: sum(state[t][-1] for t in tags) for coal, tags in side_tags.items()}
+cols = st.columns(len(metrics))
+for col, (coal, survivors) in zip(cols, metrics.items()):
+    col.metric(f"{coal} survivors", f"{survivors:.1f}")
