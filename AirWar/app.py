@@ -160,6 +160,8 @@ AIRFRAME_DEFAULTS = {
     "5-Gen": {"count": 25, "k": 0.07, "orda": (0.30, 0.30, 0.25), "vuln": 1.00},
     "4-Gen": {"count": 60, "k": 0.05, "orda": (0.25, 0.25, 0.25), "vuln": 1.00},
 }
+if 'cohort_params' not in st.session_state:
+    st.session_state.cohort_params = {}
 if 'cohorts' not in st.session_state:
     st.session_state.cohorts = DEFAULT_COHORTS.copy()
 if "nations" not in st.session_state:
@@ -233,10 +235,14 @@ def share_sliders(tag: str, tbl=(0.25, 0.25, 0.25), pfx: str = ""):
 
 # ───────── Effectiveness helpers ─────────
 
-def raw_E(shares, fam):
-    params = GENERIC[fam]
+def raw_E(shares, fam, params=None):
+    """Compute raw effectiveness with optional overridden params."""
+    base_params = GENERIC.get(fam, {})
+    if params is None:
+        params = base_params
     fn = FAMILY_FUNCS[fam]
     if fam == "quad":
+        # merge quad weights with overrides
         p = GENERIC["quad"].copy()
         p.update(params)
         return fn(*shares, p)
@@ -333,6 +339,24 @@ with st.sidebar:
 
             # **new**: record which family this cohort uses
             famsel[key] = st.session_state.nations[nation]["family"]
+            # dynamic per-cohort ORDA coefficient overrides based on selected family
+            fam = famsel[key]
+            base_params = GENERIC.get(fam, {})
+            # ensure storage exists
+            st.session_state.cohort_params.setdefault(key, {})
+            for param_name, default_val in base_params.items():
+                # slider bounds: at least twice default or 1.0
+                max_val = max(1.0, default_val * 2)
+                slider_key = f"{key}-orda-param-{param_name}"
+                current = st.session_state.cohort_params[key].get(param_name, default_val)
+                st.session_state.cohort_params[key][param_name] = st.slider(
+                    f"{param_name.capitalize()} ({nation} {airframe})",
+                    0.0,
+                    max_val,
+                    current,
+                    max_val / 100,
+                    key=slider_key,
+                )
         
     st.header("Model parameters")
     horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
@@ -350,8 +374,9 @@ with st.sidebar:
 ANCHOR_SHARES = (0.25, 0.25, 0.25, 0.25)
 E0 = {fam: raw_E(ANCHOR_SHARES, fam) for fam in FAMILIES}
 
+
 E_raw = {
-    t: raw_E(shares[t], famsel[t])
+    t: raw_E(shares[t], famsel[t], st.session_state.cohort_params.get(t))
     for t in shares
 }
 E_scaled = {t: E_raw[t] / (E0[famsel[t]] + EPS) for t in E_raw}
