@@ -170,16 +170,19 @@ GENERIC = {
 # ───────── Cohort defaults: specific airframes ─────────
 
 DEFAULT_COHORTS = [
-    ("NATO",    "F-35A"),
-    ("NATO",    "F-16C"),
-    ("NATO",    "Eurofighter Typhoon"),
-    ("Ukraine", "MiG-29"),
-    ("Ukraine", "Su-27"),
-    ("Ukraine",  "F-16C"),
-    ("China",   "J-20"),
-    ("China",   "J-10C"),
-    ("Russia",  "Su-57"),
-    ("Russia",  "Su-35S"),
+    ("Lightning-1",  "NATO",    "F-35A"),              # F-35 Lightning II
+    ("Viper-1",      "NATO",    "F-16C"),              # F-16 Fighting Falcon (“Viper”)
+    ("Typhoon-1",    "NATO",    "Eurofighter Typhoon"),
+
+    ("Fulcrum-1",    "Ukraine", "MiG-29"),             # MiG-29 Fulcrum
+    ("Flanker-1",    "Ukraine", "Su-27"),              # Su-27 Flanker
+    ("Viper-UKR-1",  "Ukraine", "F-16C"),              # second F-16 cohort, Ukraine
+
+    ("Dragon-1",     "China",   "J-20"),               # J-20 Mighty Dragon
+    ("Firebird-1",   "China",   "J-10C"),              # J-10C Firebird / Vigorous Dragon
+
+    ("Felon-1",      "Russia",  "Su-57"),              # Su-57 Felon
+    ("Flanker-E-1",  "Russia",  "Su-35S"),             # Su-35 (Flanker-E)
 ]
 
 COHORT_DEFAULTS = {
@@ -415,19 +418,22 @@ def logistic_remap(val: float, lam: float = 5.0, mid: float = 0.5) -> float:
 if 'cohorts' not in st.session_state:
     st.session_state.cohorts = DEFAULT_COHORTS.copy()
 with st.sidebar.expander("🛠 Scenario Editor", expanded=False):
-    st.write("Add a new cohort (nation + airframe):")
+    st.write("Add a new cohort:")
+    new_name    = st.text_input("Cohort call-sign", key="new_cohort_name")
     new_nation   = st.selectbox("Nation",   list(st.session_state.nations.keys()), key="new_cohort_nation")
     new_airframe = st.selectbox("Airframe", list(st.session_state.airframes.keys()), key="new_cohort_airframe")
     if st.button("Add Cohort"):
-        candidate = (new_nation, new_airframe)
-        if candidate in st.session_state.cohorts:
-            st.warning(f"Cohort {candidate} already exists.")
+        candidate = (new_name, new_nation, new_airframe)
+        if not new_name:
+            st.error("Give the cohort a unique name.")
+        elif any(c[0] == new_name for c in st.session_state.cohorts):
+            st.error("That call-sign is already used.")
         else:
             st.session_state.cohorts.append(candidate)
             # seed base allocation: all jets at the first listed base
             bases_for_nat = list(st.session_state.bases.get(new_nation, {}))
             if bases_for_nat:
-                st.session_state.cohort_base_counts[f"{new_nation}-{new_airframe}"] = {
+                st.session_state.cohort_base_counts[new_name] = {
                     bases_for_nat[0]: COHORT_DEFAULTS.get(new_nation, {})
                         .get(new_airframe, AIRFRAME_DEFAULTS[new_airframe])["count"]
                 }
@@ -439,11 +445,11 @@ def _update_family(nation, selectbox_key):
     st.session_state.nations[nation]["family"] = new_family
 
     # 2) For each cohort of that nation, clear out old sliders and reset params
-    for coh_nation, airframe in st.session_state.cohorts:
+    for name, coh_nation, _ in st.session_state.cohorts:
         if coh_nation != nation:
             continue
 
-        key = f"{coh_nation}-{airframe}"
+        key = name
 
         # Determine the new default coefficients for this nation+airframe
         default = (
@@ -614,7 +620,7 @@ with st.sidebar:
     shares = {}
     vulns  = {}
     with st.expander("Cohorts", expanded=False):
-        for nation, airframe in st.session_state.cohorts:
+        for name, nation, airframe in st.session_state.cohorts:
             
             presets = (
                 COHORT_DEFAULTS
@@ -622,7 +628,7 @@ with st.sidebar:
                 .get(airframe, AIRFRAME_DEFAULTS[airframe])
             )
 
-            key = f"{nation}-{airframe}"
+            key = name
                 # clone current default load-out on first appearance
             if key not in st.session_state.cohort_weapons:
                 st.session_state.cohort_weapons[key] = {
@@ -630,33 +636,33 @@ with st.sidebar:
                     for w, spec in st.session_state.airframe_loadouts.get(airframe, {}).items()
                 }
             with st.expander(key, expanded=False):
-                if st.button("Delete", key=f"delete-{nation}-{airframe}"):
+                if st.button("Delete", key=f"delete-{name}"):
                 # 1) remove the cohort tuple itself
-                    for ix, (ination, iairframe) in enumerate(st.session_state.cohorts):
-                        if(nation == ination and iairframe == airframe):
+                    for ix, (iname, ination, iairframe) in enumerate(st.session_state.cohorts):
+                        if(iname == name):
                             st.session_state.cohorts.pop(ix)
 
                     # 2) remove any widgets/session keys tied to this cohort
-                    prefix = f"{nation}-{airframe}"
+                    prefix = f"{name}"
                     for k in list(st.session_state.keys()):
                         if k.startswith(prefix):
                             del st.session_state[k]
                     st.session_state.cohort_base_counts.pop(key, None)
                     st.rerun()
                 counts[key] = st.slider(
-                    f"{nation} {airframe} count", 0, 200,
+                    f"{name} count", 0, 200,
                     presets["count"], 1, key=f"{key}-count"
                 )
                 with st.expander("Model Variables", expanded=False):
                     kvals[key] = st.slider(
-                        f"k ({nation} {airframe})", 0.0, 0.2,
+                        f"k ({name})", 0.0, 0.2,
                         presets["k"], 0.01, key=f"{key}-k"
                     )
                     shares[key] = share_sliders(
-                        f"{nation} {airframe}", presets["orda"], pfx=""
+                        f"{name}", presets["orda"], pfx=""
                     )
                     vulns[key] = st.slider(
-                        f"Vulnerability ({nation} {airframe})", 0.5, 1.5,
+                        f"Vulnerability ({name})", 0.5, 1.5,
                         presets["vuln"], 0.05, key=f"{key}-vuln"
                     )
                     famsel[key] = st.session_state.nations[nation]["family"]
@@ -748,16 +754,16 @@ steps = int(horizon / dt) + 1
 _time = np.linspace(0, horizon, steps)
 # create state arrays for each cohort in the dynamic list
 state = {
-    f"{nation}-{airframe}": np.empty(steps)
-    for nation, airframe in st.session_state.cohorts
+    f"{name}": np.empty(steps)
+    for name, _, _ in st.session_state.cohorts
 }
 
 for t in state:
     state[t][0] = counts[t]
 
 side_tags = {}
-for nation, airframe in st.session_state.cohorts:
-    key = f"{nation}-{airframe}"
+for name, nation, airframe in st.session_state.cohorts:
+    key = f"{name}"
     coal = st.session_state.nations[nation]["coalition"]
     side_tags.setdefault(coal, []).append(key)
 
@@ -807,14 +813,21 @@ from itertools import cycle
 styles = ["-", "--", "-.", ":", "dashdot", "dotted", (0, (3, 1, 1, 1))]
 style_iter = cycle(styles)
  # Plot each cohort series; will re-run automatically when cohorts change
-for nation, airframe in st.session_state.cohorts:
-    key = f"{nation}-{airframe}"
+for name, nation, airframe in st.session_state.cohorts:
+    key = f"{name}"
     sty = next(style_iter)
-    ax.plot(_time, state[key], label=key, linestyle=sty, linewidth=2)
+    ax.plot(_time, state[key], label=f"{name} ({nation} - {airframe})", linestyle=sty, linewidth=2)
 ax.set_xlabel("Itterations")
 ax.set_ylabel("Aircraft remaining")
 ax.set_title("Attrition – (Logistic Δ‑based kills)")
-ax.legend()
+ax.legend(
+    fontsize="small",          # shrink text
+    title_fontsize="x-small",
+    ncol=2,                      # 2 columns
+    handlelength=1.2,            # shorter line segments
+    loc="upper right",           # keep out of the plot area
+    framealpha=0.5,
+)
 st.pyplot(fig)
 
 # ───────── Metrics summary ─────────
