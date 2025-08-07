@@ -2,44 +2,45 @@ from math import exp, log
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
+with st.expander("About this app", expanded=False):
+    st.markdown(
+        """
+        OODA Attrition – Six‑Cohort Duel 
+        =================================================================
+        **What the “OODA Attrition – Six-Cohort Duel” app lets you do**
 
-"""
-OODA Attrition – Six‑Cohort Duel 
-=================================================================
-**What the “OODA Attrition – Six-Cohort Duel” app lets you do**
+        1. **Set up two opposing air forces in seconds**
 
-1. **Set up two opposing air forces in seconds**
+        * The left-hand sidebar lists six aircraft “cohorts” (e.g., *NATO 5-Gen*, *China 4-Gen*).
+        * For each cohort you drag sliders to pick how many jets you have and how lethal they are (the *k* slider).
+        * You also decide how that cohort invests its effort across the four O O D A phases—**Observe, Orient, Decide, Act**—using three simple sliders; the fourth value (*Act*) is filled in automatically so everything still adds up to 100 % .
 
-   * The left-hand sidebar lists six aircraft “cohorts” (e.g., *NATO 5-Gen*, *China 4-Gen*).
-   * For each cohort you drag sliders to pick how many jets you have and how lethal they are (the *k* slider).
-   * You also decide how that cohort invests its effort across the four O O D A phases—**Observe, Orient, Decide, Act**—using three simple sliders; the fourth value (*Act*) is filled in automatically so everything still adds up to 100 % .
+        2. **Choose how “quality” is calculated**
 
-2. **Choose how “quality” is calculated**
+        * A drop-down menu lets you pick one of several built-in mathematical recipes (power-mean, Cobb-Douglas, CES, etc.).
+        * Behind the scenes the app combines your O, R, D, A choices with the selected recipe to produce a raw effectiveness score **E** for each cohort .
 
-   * A drop-down menu lets you pick one of several built-in mathematical recipes (power-mean, Cobb-Douglas, CES, etc.).
-   * Behind the scenes the app combines your O, R, D, A choices with the selected recipe to produce a raw effectiveness score **E** for each cohort .
+        3. **Convert raw effectiveness into real-world punch**
 
-3. **Convert raw effectiveness into real-world punch**
+        * Because combat advantage is rarely linear, every raw **E** score is remapped through a logistic curve—controlled by two sliders (slope λ and midpoint) in the sidebar—to keep values between 0 and 1 and emphasize meaningful differences rather than tiny decimals .
 
-   * Because combat advantage is rarely linear, every raw **E** score is remapped through a logistic curve—controlled by two sliders (slope λ and midpoint) in the sidebar—to keep values between 0 and 1 and emphasize meaningful differences rather than tiny decimals .
+        4. **Watch the duel play out in real time**
 
-4. **Watch the duel play out in real time**
+        * Click *Run* (Streamlit updates automatically) and the model steps through the engagement second-by-second.
+        * At each step it calculates each side’s fire-power and turns that into a “kill budget” that is allocated proportionally across the enemy’s surviving aircraft .
+        * A clean line graph shows how the six cohorts attrit over the chosen time horizon, and two big counters keep score of survivors for “Side 1” (NATO + Ukraine) and “Side 2” (China + Russia) .
 
-   * Click *Run* (Streamlit updates automatically) and the model steps through the engagement second-by-second.
-   * At each step it calculates each side’s fire-power and turns that into a “kill budget” that is allocated proportionally across the enemy’s surviving aircraft .
-   * A clean line graph shows how the six cohorts attrit over the chosen time horizon, and two big counters keep score of survivors for “Side 1” (NATO + Ukraine) and “Side 2” (China + Russia) .
+        5. **Experiment and learn**
 
-5. **Experiment and learn**
+        * Drag any slider—the plot and survivor counts refresh instantly, letting you explore *what-if* questions in seconds.
+        * Try doubling a cohort’s numbers, shifting effort from *Observe* to *Decide*, or steepening the kill-advantage scale σ to see how small qualitative edges can snowball into big numerical wins.
 
-   * Drag any slider—the plot and survivor counts refresh instantly, letting you explore *what-if* questions in seconds.
-   * Try doubling a cohort’s numbers, shifting effort from *Observe* to *Decide*, or steepening the kill-advantage scale σ to see how small qualitative edges can snowball into big numerical wins.
+        In short, this Streamlit app is an interactive sandbox that turns abstract OODA-loop theory into an intuitive, visual **“what happens if?”** tool for planners, analysts, or curious enthusiasts.
 
-In short, this Streamlit app is an interactive sandbox that turns abstract OODA-loop theory into an intuitive, visual **“what happens if?”** tool for planners, analysts, or curious enthusiasts.
-
-* [OODA Paper](https://multiplex.studio/files/OODA-Game.pdf)
-* [Source Code](https://github.com/jlind0/UNCYBER.Space.GameTheory/blob/main/AirWar/app.py)
-"""
-
+        * [OODA Paper](https://multiplex.studio/files/OODA-Game.pdf)
+        * [Source Code](https://github.com/jlind0/UNCYBER.Space.GameTheory/blob/main/AirWar/app.py)
+        """
+    )
 # ────────────────────────────────────────────────
 EPS = 1e-9
 st.set_page_config(page_title="OODA – Six‑Cohort Duel", layout="wide")
@@ -206,7 +207,7 @@ with st.sidebar:
             0,
             200,
             presets.get("count", 60),
-            10,
+            1,
         )
         kvals[tag] = st.slider(
             f"k {tag}",
