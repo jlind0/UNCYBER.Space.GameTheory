@@ -23,13 +23,13 @@ The result is a *rapid-fire lab* where planners can see how small shifts in doct
 
 | Family | Mathematical Form | Intuition | When to assign it to a nation | Key coefficients |
 |--------|-------------------|-----------|-------------------------------|------------------|
-| **`power`** (generalised mean) | \(E = \bigl( \alpha O^p + \beta R^p + \gamma D^p + \delta A^p \bigr)^{1/p}\) | Smoothly blends inputs; tune *p* to move from max-like to min-like behaviour. | Nations whose *tempo* is limited by their **slowest** O/R/D/A phase (lower *p*) or whose strengths compound (higher *p*). | `alpha…delta` (phase weights), `p` (elasticity) |
+| **`power`** (generalised mean) | \\(E = \\bigl( \\alpha O^p + \\beta R^p + \\gamma D^p + \\delta A^p \\bigr)^{1/p}\\) | Smoothly blends inputs; tune *p* to move from max-like to min-like behaviour. | Nations whose *tempo* is limited by their **slowest** O/R/D/A phase (lower *p*) or whose strengths compound (higher *p*). | `alpha…delta` (phase weights), `p` (elasticity) |
 | **`ces`** (Constant-Elasticity of Substitution) | Same form as `power`, but parameters are usually called *ρ*. | Widely used in combat modelling; controls how easily effort shifts between phases. | Forces that can fluidly re-task ISR assets or pilots → pick **high substitutability** (*ρ* near 0). Rigid doctrines → *ρ* farther from 0. | `alpha…delta`, `rho` |
-| **`cobb`** (Cobb–Douglas) | \(E = k\,O^{\alpha}R^{\beta}D^{\gamma}A^{\delta}\) | Pure multiplicative synergy; if one phase is 0, effectiveness is 0. | Highly integrated doctrines (e.g., USAF “fusion warfare”) where a single phase failure is catastrophic. | `k` (scale), `alpha…delta` |
-| **`exp`** (Exponential saturation) | \(E = c\,[1 - e^{-\lambda(O+R+D+A)}]\) | Rapid gains early, diminishing returns later. | Conscript or low-tech forces: initial improvements help a lot, but plateau quickly. | `c` (cap), `lam` (rise rate) |
-| **`logit`** (probabilistic trigger) | \(E = \bigl[1+e^{-(\Sigma \alpha_i \ln P_i - \theta)}\bigr]^{-1}\) | Interprets effectiveness as a **probability of seizing the initiative**. | Nations with doctrine centred on *critical decision points* (e.g., Russia’s emphasis on first-salvo advantage). | `alpha…delta`, `theta` (difficulty) |
+| **`cobb`** (Cobb–Douglas) | \\(E = k\\,O^{\\alpha}R^{\\beta}D^{\\gamma}A^{\\delta}\\) | Pure multiplicative synergy; if one phase is 0, effectiveness is 0. | Highly integrated doctrines (e.g., USAF “fusion warfare”) where a single phase failure is catastrophic. | `k` (scale), `alpha…delta` |
+| **`exp`** (Exponential saturation) | \\(E = c\\,[1 - e^{-\\lambda(O+R+D+A)}]\\) | Rapid gains early, diminishing returns later. | Conscript or low-tech forces: initial improvements help a lot, but plateau quickly. | `c` (cap), `lam` (rise rate) |
+| **`logit`** (probabilistic trigger) | \\(E = \\bigl[1+e^{-(\\Sigma \\alpha_i \\ln P_i - \\theta)}\\bigr]^{-1}\\) | Interprets effectiveness as a **probability of seizing the initiative**. | Nations with doctrine centred on *critical decision points* (e.g., Russia’s emphasis on first-salvo advantage). | `alpha…delta`, `theta` (difficulty) |
 | **`quad`** (full quadratic) | Weighted quadratic over all pairings. | Captures **synergies and trade-offs** explicitly (e.g., Observe-Orient cross-term). | Research or wargame labs exploring niche interactions; expensive but expressive. | `w1…w10` (weights) |
-| **`hybrid`** (bespoke mix) | \(E = k\,O^{\alpha}e^{-\lambda R} + \beta D + \gamma \sqrt{A}\) | Semi-empirical formula merging power, decay, and surprise. | NATO-style composite doctrine: strong ISR surge (O), rapid R hamper, and decisive action spikes (A). | `k, alpha, beta, gamma, delta, lam` |
+| **`hybrid`** (bespoke mix) | \\(E = k\\,O^{\\alpha}e^{-\\lambda R} + \\beta D + \\gamma \\sqrt{A}\\) | Semi-empirical formula merging power, decay, and surprise. | NATO-style composite doctrine: strong ISR surge (O), rapid R hamper, and decisive action spikes (A). | `k, alpha, beta, gamma, delta, lam` |
 
 ### Picking Families in Practice
 1. **Doctrine survey** Tag each nation’s *training philosophy*—is it attrition-centric, manoeuvre-centric, or probability-of-kill focused?  
@@ -41,12 +41,12 @@ The result is a *rapid-fire lab* where planners can see how small shifts in doct
 
 ## 2  ORDA Effort Shares and Why They Matter
 
-The sliders labelled **O / R / D** set the *fraction of pilot & C2 effort* devoted to each phase; **A** is auto-filled to ensure \(O+R+D+A=1\).
+The sliders labelled **O / R / D** set the *fraction of pilot & C2 effort* devoted to each phase; **A** is auto-filled to ensure \\(O+R+D+A=1\\).
 
 * **Power-/CES-style families:** Effectiveness rises fastest when effort flows into the **most-weighted** phase; e.g., if `alpha > beta`, boosting *O* gives better marginal returns than *R*.  
-* **Cobb–Douglas:** Decreasing any one share below ~0.1 sharply cuts \(E\). Balanced ORDA usually beats extreme specialisation.  
+* **Cobb–Douglas:** Decreasing any one share below ~0.1 sharply cuts \\(E\\). Balanced ORDA usually beats extreme specialisation.  
 * **Exponential:** Returns plateau—after ~0.3 total effort per phase you get <5 percent gain. Good for modelling diminishing ISR returns.  
-* **Logit:** Think *threshold*. Until the weighted log-sum crosses \(\theta\), \(E\) is near 0; once past it, small extra effort lands outsized payoff.  
+* **Logit:** Think *threshold*. Until the weighted log-sum crosses \\(\\theta\\), \\(E\\) is near 0; once past it, small extra effort lands outsized payoff.  
 * **Hybrid:**   Observe fuels the first term; Reduce *R* (Radar deception) to avoid the negative exponent; high *A* boosts the square-root term—great for doctrines that strike after blinding radar.
 
 ### Quick-Start Heuristics
@@ -440,40 +440,57 @@ with st.sidebar:
         # ————————————— Air-bases by nation —————————————
     with st.expander("Air-bases", expanded=False):
         for nat in sorted(st.session_state.bases):
-            st.markdown(f"**{nat}**")
-            for bname, (lat, lon) in list(st.session_state.bases[nat].items()):
-                col1, col2, col3 = st.columns((4, 2, 2))
-                with col1:
-                    st.text_input("Name", bname, key=f"bname-{nat}-{bname}", disabled=True)
-                with col2:
-                    st.number_input("Lat", value=lat, key=f"blat-{nat}-{bname}")
-                with col3:
-                    st.number_input("Lon", value=lon, key=f"blon-{nat}-{bname}")
+            with st.expander(nat, expanded=False):
+                for bname, (lat, lon) in list(st.session_state.bases[nat].items()):
+                    col1, col2, col3 = st.columns((4, 2, 2))
+                    with col1:
+                        st.text_input("Name", bname, key=f"bname-{nat}-{bname}", disabled=True)
+                    with col2:
+                        st.number_input("Lat", value=lat, key=f"blat-{nat}-{bname}")
+                    with col3:
+                        st.number_input("Lon", value=lon, key=f"blon-{nat}-{bname}")
+                with st.expander("Add Air Base", expanded=False):
+                    # add a new base for this nation
+                    new_bn = st.text_input("New base name", key=f"newbase-{nat}")
+                    # ⬇️ map-picker section
+                    st.caption("Click map or type numbers ↓")
+                    lat_key = f"newlat-{nat}"
+                    lon_key = f"newlon-{nat}"
 
-            # add a new base for this nation
-            new_bn = st.text_input("New base name", key=f"newbase-{nat}")
-            # ⬇️ map-picker section
-            st.caption("Click map or type numbers ↓")
-            col_lat, col_lon = st.columns(2)
-            new_lat = col_lat.number_input("Lat°", -90.0, 90.0, key=f"newlat-{nat}")
-            new_lon = col_lon.number_input("Lon°", -180.0, 180.0, key=f"newlon-{nat}")
+                    # ------------------------------------------------------------------
+                    # 1️⃣  If user clicked on the map in the previous run, the coords are
+                    #     already in st.session_state[lat_key / lon_key].  Otherwise set 0.
+                    # ------------------------------------------------------------------
+                    st.session_state.setdefault(lat_key, 0.0)
+                    st.session_state.setdefault(lon_key, 0.0)
 
-            # show small map centred on Black Sea
-            _m = folium.Map(location=[44.5, 34.0], zoom_start=5)
-            folium.LatLngPopup().add_to(_m)
-            # render & capture click
-            map_out = st_folium(_m, height=250, width=400, key=f"map-{nat}")
-            if map_out and map_out.get("last_clicked"):
-                new_lat = map_out["last_clicked"]["lat"]
-                new_lon = map_out["last_clicked"]["lng"]
-                # update inputs visually
-                st.session_state[f"newlat-{new_bn}-{nat}"] = new_lat
-                st.session_state[f"newlon-{new_bn}-{nat}"] = new_lon
-            if st.button("Add base", key=f"addbase-{nat}"):
-                if new_bn and new_bn not in st.session_state.bases[nat]:
-                    st.session_state.bases[nat][new_bn] = (new_lat, new_lon)
-                    st.toast(f"Base “{new_bn}” added to {nat}")
-                    st.rerun()
+                    # ------------------------------------------------------------------
+                    # 2️⃣  Show the map first and capture a click
+                    # ------------------------------------------------------------------
+                    m = folium.Map(location=[44.5, 34.0], zoom_start=5)
+                    folium.LatLngPopup().add_to(m)
+                    out = st_folium(m, height=250, width=400, key=f"map-{nat}")
+
+                    # If the user clicks this run → write to session_state THEN rerun
+                    if out and out.get("last_clicked"):
+                        st.session_state[lat_key] = out["last_clicked"]["lat"]
+                        st.session_state[lon_key] = out["last_clicked"]["lng"]
+
+                    # ------------------------------------------------------------------
+                    # 3️⃣  Now create the number_input widgets; they read from session_state
+                    # ------------------------------------------------------------------
+                    col_lat, col_lon = st.columns(2)
+                    new_lat = col_lat.number_input("Lat°", -90.0, 90.0,
+                                                key=lat_key)
+                    new_lon = col_lon.number_input("Lon°", -180.0, 180.0,
+                                                key=lon_key)
+                        
+                    if st.button("Add base", key=f"addbase-{nat}"):
+                        
+                        if new_bn and new_bn not in st.session_state.bases[nat]:
+                            st.session_state.bases[nat][new_bn] = (new_lat, new_lon)
+                            st.toast(f"Base “{new_bn}” added to {nat}")
+                            st.rerun()
     # ————————————— Weapon catalogue (shared stats) —————————————
     with st.expander("Weapon characteristics", expanded=False):
         for w in sorted(st.session_state.weapons):
@@ -593,17 +610,38 @@ with st.sidebar:
                 f"{nation} {airframe} count", 0, 200,
                 presets["count"], 1, key=f"{key}-count"
             )
-            kvals[key] = st.slider(
-                f"k ({nation} {airframe})", 0.0, 0.2,
-                presets["k"], 0.01, key=f"{key}-k"
-            )
-            shares[key] = share_sliders(
-                f"{nation} {airframe}", presets["orda"], pfx=""
-            )
-            vulns[key] = st.slider(
-                f"Vulnerability ({nation} {airframe})", 0.5, 1.5,
-                presets["vuln"], 0.05, key=f"{key}-vuln"
-            )
+            with st.expander("Model Variables", expanded=False):
+                kvals[key] = st.slider(
+                    f"k ({nation} {airframe})", 0.0, 0.2,
+                    presets["k"], 0.01, key=f"{key}-k"
+                )
+                shares[key] = share_sliders(
+                    f"{nation} {airframe}", presets["orda"], pfx=""
+                )
+                vulns[key] = st.slider(
+                    f"Vulnerability ({nation} {airframe})", 0.5, 1.5,
+                    presets["vuln"], 0.05, key=f"{key}-vuln"
+                )
+                famsel[key] = st.session_state.nations[nation]["family"]
+        # seed default coefficients for this cohort (nation+airframe)
+                default = DEFAULT_COEFFS.get(nation, {}).get(airframe, GENERIC.get(famsel[key], {}))
+                st.session_state.cohort_params.setdefault(key, default.copy())
+                # dynamic per-cohort ORDA coefficient overrides based on selected family
+                fam = famsel[key]
+                base_params = GENERIC.get(fam, {})
+                # ensure storage exists
+                st.session_state.cohort_params.setdefault(key, {})
+                for param, val in list(st.session_state.cohort_params[key].items()):
+                    max_val = max(1.0, val * 2)
+                    slider_key = f"{key}-orda-param-{param}"
+                    st.session_state.cohort_params[key][param] = st.slider(
+                        f"{param.capitalize()}",
+                        0.0,
+                        max_val,
+                        val,
+                        max_val/100,
+                        key=slider_key,
+                    )
                         # ————————————— Base selector —————————————
                         # ————————————— Base allocation —————————————
             nat_bases = list(st.session_state.bases.get(nation, {}))
@@ -613,56 +651,35 @@ with st.sidebar:
                     nat_bases[0] if nat_bases else "—": counts[key]
                 }
 
-            st.markdown("**Base allocation**")
-            total_assigned = 0
-            for b in nat_bases:
-                alloc_key = f"{key}-base-{b}"
-                current   = st.session_state.cohort_base_counts[key].get(b, 0)
-                new_qty = st.slider(
-                    f"{b}", 0, counts[key], current, 1, key=alloc_key
-                )
-                st.session_state.cohort_base_counts[key][b] = new_qty
-                total_assigned += new_qty
+            with st.expander("Base Allocation", expanded=False):
+                total_assigned = 0
+                for b in nat_bases:
+                    alloc_key = f"{key}-base-{b}"
+                    current   = st.session_state.cohort_base_counts[key].get(b, 0)
+                    new_qty = st.slider(
+                        f"{b}", 0, counts[key], current, 1, key=alloc_key
+                    )
+                    st.session_state.cohort_base_counts[key][b] = new_qty
+                    total_assigned += new_qty
 
-            # warn if allocations don’t match cohort size
-            if total_assigned != counts[key]:
-                st.warning(f"{total_assigned} / {counts[key]} aircraft assigned")
-            # ————————————— Cohort weapon quantities —————————————
-            st.markdown("**Weapons**")
-            for w in list(st.session_state.cohort_weapons[key]):
-                spec = st.session_state.weapons.get(w, {"range_km":"?", "pk":0})
-                q_key = f"{key}-{w}-qty"
-                qty = st.slider(
-                    f"{w} qty", 0, 12,
-                    st.session_state.cohort_weapons[key][w], 1, key=q_key
-                )
-                if qty == 0:
-                    del st.session_state.cohort_weapons[key][w]
-                else:
-                    st.session_state.cohort_weapons[key][w] = qty
-                st.caption(f" Range {spec['range_km']} km | Pₖ {spec['pk']:.2f}")
-            # **new**: record which family this cohort uses
-            # use family set per nation
-            famsel[key] = st.session_state.nations[nation]["family"]
-        # seed default coefficients for this cohort (nation+airframe)
-            default = DEFAULT_COEFFS.get(nation, {}).get(airframe, GENERIC.get(famsel[key], {}))
-            st.session_state.cohort_params.setdefault(key, default.copy())
-            # dynamic per-cohort ORDA coefficient overrides based on selected family
-            fam = famsel[key]
-            base_params = GENERIC.get(fam, {})
-            # ensure storage exists
-            st.session_state.cohort_params.setdefault(key, {})
-            for param, val in list(st.session_state.cohort_params[key].items()):
-                max_val = max(1.0, val * 2)
-                slider_key = f"{key}-orda-param-{param}"
-                st.session_state.cohort_params[key][param] = st.slider(
-                    f"{param.capitalize()}",
-                    0.0,
-                    max_val,
-                    val,
-                    max_val/100,
-                    key=slider_key,
-                )
+                # warn if allocations don’t match cohort size
+                if total_assigned != counts[key]:
+                    st.warning(f"{total_assigned} / {counts[key]} aircraft assigned")
+                # ————————————— Cohort weapon quantities —————————————
+            with st.expander("Weapon Systems", expanded=False):
+                for w in list(st.session_state.cohort_weapons[key]):
+                    spec = st.session_state.weapons.get(w, {"range_km":"?", "pk":0})
+                    q_key = f"{key}-{w}-qty"
+                    qty = st.slider(
+                        f"{w} qty", 0, 12,
+                        st.session_state.cohort_weapons[key][w], 1, key=q_key
+                    )
+                    if qty == 0:
+                        del st.session_state.cohort_weapons[key][w]
+                    else:
+                        st.session_state.cohort_weapons[key][w] = qty
+                    st.caption(f" Range {spec['range_km']} km | Pₖ {spec['pk']:.2f}")
+            
         
     st.header("Model parameters")
     horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
