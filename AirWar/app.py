@@ -260,26 +260,6 @@ with st.sidebar.expander("🛠 Scenario Editor", expanded=False):
             st.session_state.cohorts.append(candidate)
             st.success(f"Added cohort {candidate}")
             st.rerun()
-
-for idx, (nation, airframe) in enumerate(st.session_state.cohorts):
-    coal  = st.session_state.nations[nation]["coalition"]
-    fam   = st.session_state.nations[nation]["family"]
-    cols  = st.columns((3, 1))
-
-    # show “Nation (coalition, family) – Airframe”
-    cols[0].write(f"{nation} ({coal}, {fam}) — {airframe}")
-
-    # delete button keyed by both nation & airframe
-    if cols[1].button("Delete", key=f"delete-{nation}-{airframe}"):
-        # 1) remove the cohort tuple itself
-        st.session_state.cohorts.pop(idx)
-
-        # 2) remove any widgets/session keys tied to this cohort
-        prefix = f"{nation}-{airframe}"
-        for k in list(st.session_state.keys()):
-            if k.startswith(prefix):
-                del st.session_state[k]
-            st.rerun()
 def _update_family(nation, selectbox_key):
     # copy the new choice into your nations dict
     st.session_state.nations[nation]["family"] = st.session_state[selectbox_key]
@@ -304,6 +284,7 @@ with st.sidebar:
             args = (nation, select_key)
         )
         st.session_state.nations[nation]["family"] = new_fam
+        
 
     # —————————— now your existing counts/k/kvals/shares/vulns loops ——————————
     counts = {}
@@ -322,7 +303,18 @@ with st.sidebar:
 
         key = f"{nation}-{airframe}"
         with st.expander(key, expanded=False):
-            
+            if st.button("Delete", key=f"delete-{nation}-{airframe}"):
+            # 1) remove the cohort tuple itself
+                for ix, (ination, iairframe) in enumerate(st.session_state.cohorts):
+                    if(nation == ination and iairframe == airframe):
+                        st.session_state.cohorts.pop(ix)
+
+                # 2) remove any widgets/session keys tied to this cohort
+                prefix = f"{nation}-{airframe}"
+                for k in list(st.session_state.keys()):
+                    if k.startswith(prefix):
+                        del st.session_state[k]
+                st.rerun()
             counts[key] = st.slider(
                 f"{nation} {airframe} count", 0, 200,
                 presets["count"], 1, key=f"{key}-count"
