@@ -3,6 +3,7 @@ import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 import folium
+import copy
 from streamlit_folium import st_folium
 with st.expander("About this app", expanded=False):
     st.markdown(
@@ -255,16 +256,44 @@ DEFAULT_COEFFS = {
     },
 }
 AIRFRAME_LOADOUTS = {
-    "F-35A":  {"AIM-120C": 4, "AIM-9X": 2},
-    "F-16C":  {"AIM-120C": 2, "AIM-9M": 2},
-    "Eurofighter Typhoon": {"Meteor": 4, "ASRAAM": 2},
-    "MiG-29": {"R-27R": 2, "R-73": 2},
-    "Su-27":  {"R-27ER": 2, "R-73": 2},
-    "J-20":   {"PL-15": 4, "PL-10": 2},
-    "J-10C":  {"PL-15": 2, "PL-8": 2},
-    "Su-57":  {"R-77M": 4, "R-74M2": 2},
-    "Su-35S": {"R-77-1": 4, "R-73": 2},
+    "F-35A": {
+        "AIM-120C": {"default": 4, "max": 6},
+        "AIM-9X":   {"default": 2, "max": 2},
+    },
+    "F-16C": {
+        "AIM-120C": {"default": 2, "max": 6},
+        "AIM-9M":   {"default": 2, "max": 2},
+    },
+    "Eurofighter Typhoon": {
+        "Meteor": {"default": 4, "max": 6},
+        "ASRAAM": {"default": 2, "max": 4},
+    },
+    "MiG-29": {
+        "R-27R": {"default": 2, "max": 4},
+        "R-73":  {"default": 2, "max": 6},
+    },
+    "Su-27": {
+        "R-27ER": {"default": 2, "max": 6},
+        "R-73":   {"default": 2, "max": 4},
+    },
+    "J-20": {
+        "PL-15": {"default": 4, "max": 4},
+        "PL-10": {"default": 2, "max": 2},
+    },
+    "J-10C": {
+        "PL-15": {"default": 2, "max": 4},
+        "PL-8":  {"default": 2, "max": 2},
+    },
+    "Su-57": {
+        "R-77M":  {"default": 4, "max": 4},
+        "R-74M2": {"default": 2, "max": 2},
+    },
+    "Su-35S": {
+        "R-77-1": {"default": 4, "max": 6},
+        "R-73":   {"default": 2, "max": 2},
+    },
 }
+
 WEAPON_LIBRARY = {
     "AIM-120C": {"range_km": 105, "pk": 0.55},
     "AIM-9X":   {"range_km":  35, "pk": 0.30},
@@ -302,9 +331,7 @@ if "nations" not in st.session_state:
 if "airframes" not in st.session_state:
     st.session_state.airframes = AIRFRAME_DEFAULTS.copy()
 if "airframe_loadouts" not in st.session_state:
-    st.session_state.airframe_loadouts = {
-        af: d.copy() for af, d in AIRFRAME_LOADOUTS.items()
-    }
+    st.session_state.airframe_loadouts = copy.deepcopy(AIRFRAME_LOADOUTS)
 # editable copy of bases
 if "bases" not in st.session_state:
     st.session_state.bases = {n: d.copy() for n, d in NATION_BASES.items()}
@@ -505,70 +532,79 @@ with st.sidebar:
                 )
 
         # ————————————— Airframe default load-outs —————————————
-        st.subheader("Airframe default load-outs")
+    with st.expander("Airframe characteristics", expanded=False):
         for af in sorted(st.session_state.airframe_loadouts):
             with st.expander(af, expanded=False):
                 load = st.session_state.airframe_loadouts[af]
                 # edit existing weapons
                 for w in list(load):
-                    q_key = f"{af}-{w}-qty"
-                    new_q = st.number_input(
-                        f"{w} qty", 0, 12, load[w], 1, key=q_key
+                    max_key = f"{af}-{w}-max"
+                    q_key   = f"{af}-{w}-qty"
+
+                    # Max first → defines the slider cap for qty
+                    new_max = st.number_input(
+                        f"{w} MAX", 1, 12, load[w]["max"], 1, key=max_key
                     )
-                    if new_q == 0:                               # ← deletion path
-                        del load[w]                              # 1) remove here
-                        # 2) propagate to all cohorts flying this air-frame
+                    load[w]["max"] = new_max
+
+                    new_q = st.number_input(
+                       f"{w} default", 0, new_max,
+                       min(load[w]["default"], new_max), 1, key=q_key
+                    )
+                    if new_q == 0:
+                        del load[w]               # delete weapon from this air-frame
+                        # propagate deletion to cohorts
                         for ckey, cweps in st.session_state.cohort_weapons.items():
-                            _, _, c_af = ckey.partition("-")     # "Nation-Airframe"
+                            _, _, c_af = ckey.partition("-")
                             if c_af == af:
                                 cweps.pop(w, None)
-                        st.toast(f"{w} removed from {af} and its cohorts")
-                        st.rerun()
                     else:
-                        load[w] = new_q
+                        load[w]["default"] = new_q
                 # add another weapon
-                add_w = st.selectbox(
-                    "Add weapon", ["— select —"] + sorted(st.session_state.weapons),
-                    key=f"{af}-addw"
-                )
-                add_q = st.number_input("Qty", 1, 12, 2, 1, key=f"{af}-addq")
-                if st.button("Add", key=f"{af}-addbtn"):
-                    if add_w == "— select —":
-                        st.warning("Pick a weapon first.")
-                    else:
-                        # 1) add to the current air-frame
-                        load[add_w] = add_q
+                with st.expander("Add Weapon", expanded=False):
+                    add_w = st.selectbox(
+                        "Add weapon", ["— select —"] + sorted(st.session_state.weapons),
+                        key=f"{af}-addw"
+                    )
+                    add_max = st.number_input("MAX / a/c", 1, 12, 2, 1, key=f"{af}-addmax")
+                    add_q   = st.number_input("Qty", 1, add_max, 2, 1, key=f"{af}-addq")
+                    if st.button("Add", key=f"{af}-addbtn"):
+                        if add_w == "— select —":
+                            st.warning("Pick a weapon first.")
+                        else:
+                            # 1) add to the current air-frame
+                            load[add_w] = {"default": min(add_q, add_max), "max": add_max}
 
-                        # 2) propagate to _every_ other air-frame that ALREADY carries this weapon
-                        for other_af, other_load in st.session_state.airframe_loadouts.items():
-                            if other_af == af:
-                                continue
-                            if add_w in other_load:
-                                other_load[add_w] = add_q
-                                                # 3) ensure all current cohorts flying those air-frames get the weapon
-                        for ckey, cweps in st.session_state.cohort_weapons.items():
-                            # cohort key format: "Nation-Airframe"
-                            _, _, c_af = ckey.partition("-")
-                            if add_w in st.session_state.airframe_loadouts.get(c_af, {}):
-                                # add only if not already present (honour manual changes)
-                                cweps.setdefault(add_w, add_q)
-                        st.toast(f"{add_w} set to qty {add_q} for all applicable air-frames")
-                        st.rerun()
+                            # 2) propagate to _every_ other air-frame that ALREADY carries this weapon
+                            for other_af, other_load in st.session_state.airframe_loadouts.items():
+                                if other_af == af:
+                                    continue
+                                if add_w in other_load:
+                                    other_load[add_w] = add_q
+                                                    # 3) ensure all current cohorts flying those air-frames get the weapon
+                            for ckey, cweps in st.session_state.cohort_weapons.items():
+                                # cohort key format: "Nation-Airframe"
+                                _, _, c_af = ckey.partition("-")
+                                if add_w in st.session_state.airframe_loadouts.get(c_af, {}):
+                                    # add only if not already present (honour manual changes)
+                                    cweps.setdefault(add_w, min(add_q, add_max))
+                            st.toast(f"{add_w} set to qty {add_q} for all applicable air-frames")
+                            st.rerun()
         # ————————————— Aggregation families (per nation) —————————————
-    st.subheader("Aggregation family by nation")
-    for nation in st.session_state.nations:
-        # grab current, then let user override
-        select_key = f"fam-{nation}"
-        curr = st.session_state.nations[nation]["family"]
-        new_fam = st.selectbox(
-            f"Family for {nation}",
-            FAMILIES,
-            index=FAMILIES.index(curr),
-            key=select_key,
-            on_change=_update_family,
-            args = (nation, select_key)
-        )
-        st.session_state.nations[nation]["family"] = new_fam
+    with st.expander("Aggregation family by nation", expanded=False):
+        for nation in st.session_state.nations:
+            # grab current, then let user override
+            select_key = f"fam-{nation}"
+            curr = st.session_state.nations[nation]["family"]
+            new_fam = st.selectbox(
+                f"Family for {nation}",
+                FAMILIES,
+                index=FAMILIES.index(curr),
+                key=select_key,
+                on_change=_update_family,
+                args = (nation, select_key)
+            )
+            st.session_state.nations[nation]["family"] = new_fam
         
 
     # —————————— now your existing counts/k/kvals/shares/vulns loops ——————————
@@ -577,111 +613,112 @@ with st.sidebar:
     famsel = {}
     shares = {}
     vulns  = {}
-
-    for nation, airframe in st.session_state.cohorts:
-        
-        presets = (
-            COHORT_DEFAULTS
-              .get(nation, {})
-              .get(airframe, AIRFRAME_DEFAULTS[airframe])
-        )
-
-        key = f"{nation}-{airframe}"
-            # clone current default load-out on first appearance
-        if key not in st.session_state.cohort_weapons:
-            st.session_state.cohort_weapons[key] = (
-                st.session_state.airframe_loadouts.get(airframe, {}).copy()
-            )
-        with st.expander(key, expanded=False):
-            if st.button("Delete", key=f"delete-{nation}-{airframe}"):
-            # 1) remove the cohort tuple itself
-                for ix, (ination, iairframe) in enumerate(st.session_state.cohorts):
-                    if(nation == ination and iairframe == airframe):
-                        st.session_state.cohorts.pop(ix)
-
-                # 2) remove any widgets/session keys tied to this cohort
-                prefix = f"{nation}-{airframe}"
-                for k in list(st.session_state.keys()):
-                    if k.startswith(prefix):
-                        del st.session_state[k]
-                st.session_state.cohort_base_counts.pop(key, None)
-                st.rerun()
-            counts[key] = st.slider(
-                f"{nation} {airframe} count", 0, 200,
-                presets["count"], 1, key=f"{key}-count"
-            )
-            with st.expander("Model Variables", expanded=False):
-                kvals[key] = st.slider(
-                    f"k ({nation} {airframe})", 0.0, 0.2,
-                    presets["k"], 0.01, key=f"{key}-k"
-                )
-                shares[key] = share_sliders(
-                    f"{nation} {airframe}", presets["orda"], pfx=""
-                )
-                vulns[key] = st.slider(
-                    f"Vulnerability ({nation} {airframe})", 0.5, 1.5,
-                    presets["vuln"], 0.05, key=f"{key}-vuln"
-                )
-                famsel[key] = st.session_state.nations[nation]["family"]
-        # seed default coefficients for this cohort (nation+airframe)
-                default = DEFAULT_COEFFS.get(nation, {}).get(airframe, GENERIC.get(famsel[key], {}))
-                st.session_state.cohort_params.setdefault(key, default.copy())
-                # dynamic per-cohort ORDA coefficient overrides based on selected family
-                fam = famsel[key]
-                base_params = GENERIC.get(fam, {})
-                # ensure storage exists
-                st.session_state.cohort_params.setdefault(key, {})
-                for param, val in list(st.session_state.cohort_params[key].items()):
-                    max_val = max(1.0, val * 2)
-                    slider_key = f"{key}-orda-param-{param}"
-                    st.session_state.cohort_params[key][param] = st.slider(
-                        f"{param.capitalize()}",
-                        0.0,
-                        max_val,
-                        val,
-                        max_val/100,
-                        key=slider_key,
-                    )
-                        # ————————————— Base selector —————————————
-                        # ————————————— Base allocation —————————————
-            nat_bases = list(st.session_state.bases.get(nation, {}))
-            if key not in st.session_state.cohort_base_counts:
-                # first render → put everything at first base
-                st.session_state.cohort_base_counts[key] = {
-                    nat_bases[0] if nat_bases else "—": counts[key]
-                }
-
-            with st.expander("Base Allocation", expanded=False):
-                total_assigned = 0
-                for b in nat_bases:
-                    alloc_key = f"{key}-base-{b}"
-                    current   = st.session_state.cohort_base_counts[key].get(b, 0)
-                    new_qty = st.slider(
-                        f"{b}", 0, counts[key], current, 1, key=alloc_key
-                    )
-                    st.session_state.cohort_base_counts[key][b] = new_qty
-                    total_assigned += new_qty
-
-                # warn if allocations don’t match cohort size
-                if total_assigned != counts[key]:
-                    st.warning(f"{total_assigned} / {counts[key]} aircraft assigned")
-                # ————————————— Cohort weapon quantities —————————————
-            with st.expander("Weapon Systems", expanded=False):
-                for w in list(st.session_state.cohort_weapons[key]):
-                    spec = st.session_state.weapons.get(w, {"range_km":"?", "pk":0})
-                    q_key = f"{key}-{w}-qty"
-                    qty = st.slider(
-                        f"{w} qty", 0, 12,
-                        st.session_state.cohort_weapons[key][w], 1, key=q_key
-                    )
-                    if qty == 0:
-                        del st.session_state.cohort_weapons[key][w]
-                    else:
-                        st.session_state.cohort_weapons[key][w] = qty
-                    st.caption(f" Range {spec['range_km']} km | Pₖ {spec['pk']:.2f}")
+    with st.expander("Cohorts", expanded=False):
+        for nation, airframe in st.session_state.cohorts:
             
+            presets = (
+                COHORT_DEFAULTS
+                .get(nation, {})
+                .get(airframe, AIRFRAME_DEFAULTS[airframe])
+            )
+
+            key = f"{nation}-{airframe}"
+                # clone current default load-out on first appearance
+            if key not in st.session_state.cohort_weapons:
+                st.session_state.cohort_weapons[key] = {
+                    w: spec["default"]
+                    for w, spec in st.session_state.airframe_loadouts.get(airframe, {}).items()
+                }
+            with st.expander(key, expanded=False):
+                if st.button("Delete", key=f"delete-{nation}-{airframe}"):
+                # 1) remove the cohort tuple itself
+                    for ix, (ination, iairframe) in enumerate(st.session_state.cohorts):
+                        if(nation == ination and iairframe == airframe):
+                            st.session_state.cohorts.pop(ix)
+
+                    # 2) remove any widgets/session keys tied to this cohort
+                    prefix = f"{nation}-{airframe}"
+                    for k in list(st.session_state.keys()):
+                        if k.startswith(prefix):
+                            del st.session_state[k]
+                    st.session_state.cohort_base_counts.pop(key, None)
+                    st.rerun()
+                counts[key] = st.slider(
+                    f"{nation} {airframe} count", 0, 200,
+                    presets["count"], 1, key=f"{key}-count"
+                )
+                with st.expander("Model Variables", expanded=False):
+                    kvals[key] = st.slider(
+                        f"k ({nation} {airframe})", 0.0, 0.2,
+                        presets["k"], 0.01, key=f"{key}-k"
+                    )
+                    shares[key] = share_sliders(
+                        f"{nation} {airframe}", presets["orda"], pfx=""
+                    )
+                    vulns[key] = st.slider(
+                        f"Vulnerability ({nation} {airframe})", 0.5, 1.5,
+                        presets["vuln"], 0.05, key=f"{key}-vuln"
+                    )
+                    famsel[key] = st.session_state.nations[nation]["family"]
+            # seed default coefficients for this cohort (nation+airframe)
+                    default = DEFAULT_COEFFS.get(nation, {}).get(airframe, GENERIC.get(famsel[key], {}))
+                    st.session_state.cohort_params.setdefault(key, default.copy())
+                    # dynamic per-cohort ORDA coefficient overrides based on selected family
+                    fam = famsel[key]
+                    base_params = GENERIC.get(fam, {})
+                    # ensure storage exists
+                    st.session_state.cohort_params.setdefault(key, {})
+                    for param, val in list(st.session_state.cohort_params[key].items()):
+                        max_val = max(1.0, val * 2)
+                        slider_key = f"{key}-orda-param-{param}"
+                        st.session_state.cohort_params[key][param] = st.slider(
+                            f"{param.capitalize()}",
+                            0.0,
+                            max_val,
+                            val,
+                            max_val/100,
+                            key=slider_key,
+                        )
+                            # ————————————— Base selector —————————————
+                            # ————————————— Base allocation —————————————
+                nat_bases = list(st.session_state.bases.get(nation, {}))
+                if key not in st.session_state.cohort_base_counts:
+                    # first render → put everything at first base
+                    st.session_state.cohort_base_counts[key] = {
+                        nat_bases[0] if nat_bases else "—": counts[key]
+                    }
+
+                with st.expander("Base Allocation", expanded=False):
+                    total_assigned = 0
+                    for b in nat_bases:
+                        alloc_key = f"{key}-base-{b}"
+                        current   = st.session_state.cohort_base_counts[key].get(b, 0)
+                        new_qty = st.slider(
+                            f"{b}", 0, counts[key], current, 1, key=alloc_key
+                        )
+                        st.session_state.cohort_base_counts[key][b] = new_qty
+                        total_assigned += new_qty
+
+                    # warn if allocations don’t match cohort size
+                    if total_assigned != counts[key]:
+                        st.warning(f"{total_assigned} / {counts[key]} aircraft assigned")
+                    # ————————————— Cohort weapon quantities —————————————
+                with st.expander("Weapon Systems", expanded=False):
+                    for w in list(st.session_state.cohort_weapons[key]):
+                        spec = st.session_state.weapons.get(w, {"range_km":"?", "pk":0})
+                        q_key = f"{key}-{w}-qty"
+                        qty = st.slider(
+                            f"{w} qty", 0, st.session_state.airframe_loadouts[airframe][w]["max"],
+                            st.session_state.cohort_weapons[key][w], 1, key=q_key
+                        )
+                        if qty == 0:
+                            del st.session_state.cohort_weapons[key][w]
+                        else:
+                            st.session_state.cohort_weapons[key][w] = qty
+                        st.caption(f" Range {spec['range_km']} km | Pₖ {spec['pk']:.2f}")
+                
         
-    st.header("Model parameters")
+    st.header("Global Model parameters")
     horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
     dt = 0.2
 
