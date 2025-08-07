@@ -4,19 +4,40 @@ import streamlit as st
 import matplotlib.pyplot as plt
 
 """
-OODA Attrition – Six‑Cohort Duel (Logistic‑Remapped Effectiveness)
+OODA Attrition – Six‑Cohort Duel 
 =================================================================
-This version **re‑maps raw effectiveness (E)** through a bounded
-logistic transform (Approach 3) and computes kills as a *function of the
-magnitude advantage* between the two sides’ **average remapped E**.  The
-net result is that having a higher (remapped) effectiveness confers a
-non‑linear kill‑rate advantage rather than scaling kills linearly with
-E.
+**What the “OODA Attrition – Six-Cohort Duel” app lets you do**
 
-Run locally with::
+1. **Set up two opposing air forces in seconds**
 
-    pip install streamlit numpy matplotlib
-    streamlit run app.py
+   * The left-hand sidebar lists six aircraft “cohorts” (e.g., *NATO 5-Gen*, *China 4-Gen*).
+   * For each cohort you drag sliders to pick how many jets you have and how lethal they are (the *k* slider).
+   * You also decide how that cohort invests its effort across the four O O D A phases—**Observe, Orient, Decide, Act**—using three simple sliders; the fourth value (*Act*) is filled in automatically so everything still adds up to 100 % .
+
+2. **Choose how “quality” is calculated**
+
+   * A drop-down menu lets you pick one of several built-in mathematical recipes (power-mean, Cobb-Douglas, CES, etc.).
+   * Behind the scenes the app combines your O, R, D, A choices with the selected recipe to produce a raw effectiveness score **E** for each cohort .
+
+3. **Convert raw effectiveness into real-world punch**
+
+   * Because combat advantage is rarely linear, every raw **E** score is remapped through a logistic curve—controlled by two sliders (slope λ and midpoint) in the sidebar—to keep values between 0 and 1 and emphasize meaningful differences rather than tiny decimals .
+
+4. **Watch the duel play out in real time**
+
+   * Click *Run* (Streamlit updates automatically) and the model steps through the engagement second-by-second.
+   * At each step it calculates each side’s fire-power and turns that into a “kill budget” that is allocated proportionally across the enemy’s surviving aircraft .
+   * A clean line graph shows how the six cohorts attrit over the chosen time horizon, and two big counters keep score of survivors for “Side 1” (NATO + Ukraine) and “Side 2” (China + Russia) .
+
+5. **Experiment and learn**
+
+   * Drag any slider—the plot and survivor counts refresh instantly, letting you explore *what-if* questions in seconds.
+   * Try doubling a cohort’s numbers, shifting effort from *Observe* to *Decide*, or steepening the kill-advantage scale σ to see how small qualitative edges can snowball into big numerical wins.
+
+In short, this Streamlit app is an interactive sandbox that turns abstract OODA-loop theory into an intuitive, visual **“what happens if?”** tool for planners, analysts, or curious enthusiasts.
+
+* [OODA Paper](https://multiplex.studio/files/OODA-Game.pdf)
+* [Source Code](https://github.com/jlind0/UNCYBER.Space.GameTheory/blob/main/AirWar/app.py)
 """
 
 # ────────────────────────────────────────────────
@@ -176,6 +197,7 @@ with st.sidebar:
     kvals = {}
     famsel = {}
     shares = {}
+    vuln = {}
 
     for tag, side, dfam in COHORTS:
         presets = DEFAULTS.get(tag, {})
@@ -197,6 +219,8 @@ with st.sidebar:
             f"{tag} family", FAMILIES, FAMILIES.index(dfam), key=f"{tag}-family"
         )
         shares[tag] = share_sliders(tag, presets.get("shares", (0.25, 0.25, 0.25)))
+        vuln[tag] = st.slider(f"Vulnerability {tag}",
+                           0.5, 1.5, 1.0, 0.05)
 
     st.header("Model parameters")
     horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
@@ -249,11 +273,14 @@ for i in range(1, steps):
 
     # apply losses proportionally to the opposite side
     for side, foe in (("Side 1", "Side 2"), ("Side 2", "Side 1")):
-        foe_total = sum(state[tag][i] for tag in side_tags[foe]) + EPS
+        foe_total = sum(state[tag][i] * vuln[tag]
+            for tag in side_tags[foe]) + EPS
+        
         if foe_total == 0:
             continue
         for tag in side_tags[foe]:
-            loss = K[side] * state[tag][i] / foe_total
+            hits = K[side] * (state[tag][i] * vuln[tag]) / foe_total
+            loss = hits * vuln[tag]
             state[tag][i] = max(0.0, state[tag][i] - loss)
 
 
