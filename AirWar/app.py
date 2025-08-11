@@ -1,10 +1,12 @@
 from math import exp, log
+from math import radians, sin, cos, asin, sqrt
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 import folium
 import copy
 from streamlit_folium import st_folium
+from folium.plugins import Draw
 with st.expander("About this app", expanded=False):
     st.markdown(
         """
@@ -84,7 +86,18 @@ st.set_page_config(page_title="OODA – Six‑Cohort Duel", layout="wide")
 st.title("OODA Attrition – NATO & Ukraine vs China & Russia (4 + 5 Gen mix)")
 
 # ───────────────── Aggregation families ──────────────────
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    dlat, dlon = radians(lat2-lat1), radians(lon2-lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1))*cos(radians(lat2))*sin(dlon/2)**2
+    return 2*R*asin(sqrt(a))
 
+def zone_centroid(rings):
+    # simple average of outer ring
+    if not rings: return (0.0, 0.0)
+    outer = rings[0]
+    xs = [p[0] for p in outer]; ys = [p[1] for p in outer]
+    return (sum(xs)/len(xs), sum(ys)/len(ys))  # (lon, lat)
 def power_mean(O, R, D, A, alpha, beta, gamma, delta, p):
     s = alpha * O ** p + beta * R ** p + gamma * D ** p + delta * A ** p
     return s ** (1 / p) if p != 0 else np.exp(
@@ -296,7 +309,76 @@ AIRFRAME_LOADOUTS = {
         "R-73":   {"default": 2, "max": 2},
     },
 }
+def compute_contact_time(view: dict, side_tags: dict, cap_seconds: float) -> float:
+    sides = list(side_tags.keys())
+    if len(sides) < 2:
+        return 0.0
+    s1, s2 = sides[0], sides[1]
+    def _earliest_first_on(side):
+        vals = [view[n]["first_on"] for n in side_tags[side] if "first_on" in view[n]]
+        return min(vals) if vals else 0.0
+    t_contact = max(_earliest_first_on(s1), _earliest_first_on(s2))
+    return float(min(t_contact, cap_seconds))
 
+def latlon(p):
+    """Ensure (lat, lon) ordering from tuples that might be (lon, lat)."""
+    if p is None:
+        return None
+    # Heuristic: latitude is in [-90, 90]
+    a, b = p
+    if -90 <= a <= 90 and not (-90 <= b <= 90):
+        return (a, b)  # (lat, lon)
+    return (b, a)      # assume (lon, lat) -> (lat, lon)
+
+def centroid_latlon_from_zone(zname: str):
+    rings = st.session_state.deployment_zones.get(zname, [])
+    if not rings:
+        return None
+    zlon, zlat = zone_centroid(rings)  # your centroid returns (lon, lat)
+    return (zlat, zlon)
+
+def auto_seed_zone_tasks(fill_only: bool = True):
+    all_zone_names = set(st.session_state.deployment_zones.keys())
+
+    # coalition preferences (filtered to what exists)
+    pref_allied = [z for z in ["Crimea-NW","Crimea-NE","Crimea-Central"] if z in all_zone_names] or list(all_zone_names)
+    pref_asia   = [z for z in ["Crimea-SE","Crimea-SW","Crimea-Central"] if z in all_zone_names] or list(all_zone_names)
+
+    def _centroid_latlon(zname):
+        rings = st.session_state.deployment_zones.get(zname, [])
+        if not rings: return None
+        lon, lat = zone_centroid(rings)  # your helper returns (lon, lat)
+        return (lat, lon)
+
+    def _nearest_zone(base_latlon, candidates):
+        if not base_latlon or not candidates: return NONE_ZONE
+        blat, blon = base_latlon
+        best, best_d = NONE_ZONE, float("inf")
+        for z in candidates:
+            zl = _centroid_latlon(z)
+            if not zl: continue
+            d = haversine_km(blat, blon, zl[0], zl[1])
+            if d < best_d: best, best_d = z, d
+        return best
+
+    # ensure dict exists
+    st.session_state.setdefault("cohort_zone_tasks", {})
+
+    for name, nation, airframe in st.session_state.cohorts:
+        current = st.session_state.cohort_zone_tasks.get(name, {"zone": NONE_ZONE, "fraction": 0.0})
+        if fill_only and current.get("zone") not in (None, "", NONE_ZONE):
+            continue  # don't override user's choice
+
+        coal = st.session_state.nations[nation]["coalition"]
+        bases = list(st.session_state.bases.get(nation, {}).values())
+        base_latlon = bases[0] if bases else None
+        pool = pref_allied if coal == "Allied" else pref_asia
+        zpick = _nearest_zone(base_latlon, pool)
+
+        stealthy = any(tag in airframe for tag in ("F-35", "J-20", "Su-57"))
+        frac = 0.70 if stealthy else 0.60
+
+        st.session_state.cohort_zone_tasks[name] = {"zone": zpick, "fraction": frac}
 WEAPON_LIBRARY = {
     "AIM-120C": {"range_km": 105, "pk": 0.55},
     "AIM-9X":   {"range_km":  35, "pk": 0.30},
@@ -330,7 +412,8 @@ if "nations" not in st.session_state:
         "China":   {"coalition": "Asia",   "family": "ces"},
         "Russia":  {"coalition": "Asia",   "family": "logit"},
     }
-
+if "zone_waypoints" not in st.session_state:
+    st.session_state.zone_waypoints = {}
 if "airframes" not in st.session_state:
     st.session_state.airframes = AIRFRAME_DEFAULTS.copy()
 if "airframe_loadouts" not in st.session_state:
@@ -339,9 +422,117 @@ if "airframe_loadouts" not in st.session_state:
 if "bases" not in st.session_state:
     st.session_state.bases = {n: d.copy() for n, d in NATION_BASES.items()}
 # cohort → { base_name: qty }
+# Init in session_state if not exists
+# ───────── Deployment zones: defaults & de-duped inits ─────────
+if "deployment_zones" not in st.session_state:
+    st.session_state.deployment_zones = {
+        # Rectangles sized for Crimea as you already had; kept as-is
+        "Crimea-NW":       [[(32.8,46.2),(33.2,46.2),(33.2,45.8),(32.8,45.8)]],
+        "Crimea-SW":       [[(33.0,44.8),(33.4,44.8),(33.4,44.4),(33.0,44.4)]],
+        "Crimea-SE":       [[(35.0,45.2),(35.4,45.2),(35.4,44.8),(35.0,44.8)]],
+        "Crimea-Central":  [[(33.8,45.6),(34.2,45.6),(34.2,45.2),(33.8,45.2)]],
+        "Crimea-NE":       [[(34.8,46.2),(35.2,46.2),(35.2,45.8),(34.8,45.8)]],
+        "Crimea-All":      [[(32.3,46.3),(36.6,46.3),(36.6,44.4),(32.3,44.4)]],
+    }
+
+# Ensure these exist exactly once
+if "zone_waypoints" not in st.session_state:
+    st.session_state.zone_waypoints = {
+        # Default racetrack CAPs (lon,lat) — clockwise 4-point loops
+        "Crimea-NW":      [(33.05,46.15),(33.15,46.15),(33.15,45.85),(33.05,45.85)],
+        "Crimea-NE":      [(35.00,46.15),(35.15,46.15),(35.15,45.90),(35.00,45.90)],
+        "Crimea-Central": [(33.90,45.55),(34.10,45.55),(34.10,45.30),(33.90,45.30)],
+        "Crimea-SW":      [(33.05,44.75),(33.30,44.75),(33.30,44.55),(33.05,44.55)],
+        "Crimea-SE":      [(35.05,45.15),(35.30,45.15),(35.30,44.95),(35.05,44.95)],
+    }
+
+if "zone_effects" not in st.session_state:
+    # Environment/A2AD multipliers (1.0 = neutral)
+    st.session_state.zone_effects = {
+        "Crimea-NW":      {"E_mult": 0.95, "vuln_mult": 1.10},  # moderate SAM, some clutter
+        "Crimea-NE":      {"E_mult": 0.95, "vuln_mult": 1.10},
+        "Crimea-Central": {"E_mult": 0.90, "vuln_mult": 1.20},  # densest IADS
+        "Crimea-SW":      {"E_mult": 0.92, "vuln_mult": 1.15},
+        "Crimea-SE":      {"E_mult": 0.92, "vuln_mult": 1.15},
+        "Crimea-All":     {"E_mult": 0.93, "vuln_mult": 1.15},
+    }
+
+# --- Cohort zone assignment defaults ---
+# --- Cohort zone assignment defaults (auto-seeded & distance-aware) ---
+def _auto_seed_zone_tasks():
+    # Preferred zone sets by coalition (filtered to what's actually defined)
+    all_zone_names = set(st.session_state.deployment_zones.keys())
+    pref_allied = [z for z in ["Crimea-NW", "Crimea-NE", "Crimea-Central"] if z in all_zone_names] or list(all_zone_names)
+    pref_asia   = [z for z in ["Crimea-SE", "Crimea-SW", "Crimea-Central"] if z in all_zone_names] or list(all_zone_names)
+
+    def _zone_centroid_latlon(zname):
+        rings = st.session_state.deployment_zones.get(zname, [])
+        if not rings: 
+            return None
+        lon, lat = zone_centroid(rings)  # existing helper returns (lon, lat)
+        return (lat, lon)
+
+    def _nearest_zone(base_latlon, candidates):
+        if not base_latlon or not candidates:
+            return "— none —"
+        blat, blon = base_latlon
+        best = None
+        best_d = float("inf")
+        for z in candidates:
+            zl = _zone_centroid_latlon(z)
+            if not zl:
+                continue
+            d = haversine_km(blat, blon, zl[0], zl[1])
+            if d < best_d:
+                best, best_d = z, d
+        return best or "— none —"
+
+    seeded = {}
+    for name, nation, airframe in st.session_state.cohorts:
+        coal = st.session_state.nations[nation]["coalition"]
+        bases = list(st.session_state.bases.get(nation, {}).values())
+        base_latlon = bases[0] if bases else None  # (lat, lon)
+
+        # pick coalition's preferred pool, then nearest zone to the cohort's first base
+        pool = pref_allied if coal == "Allied" else pref_asia
+        zpick = _nearest_zone(base_latlon, pool)
+
+        # reasonable default on-station fraction (stealth spend more time on CAP)
+        stealthy = any(tag in airframe for tag in ("F-35", "J-20", "Su-57"))
+        frac = 0.70 if stealthy else 0.60
+
+        seeded[name] = {"zone": zpick, "fraction": frac}
+
+    st.session_state.cohort_zone_tasks = seeded
+
+
+
+
+# --- Cohort base allocation defaults ---
 if "cohort_base_counts" not in st.session_state:
     st.session_state.cohort_base_counts = {}
+    for name, nation, airframe in st.session_state.cohorts:
+        nat_bases = list(st.session_state.bases.get(nation, {}))
+        default_count = (
+            COHORT_DEFAULTS
+            .get(nation, {})
+            .get(airframe, AIRFRAME_DEFAULTS[airframe])["count"]
+        )
+        if nat_bases:
+            # assign all aircraft to the first base by default
+            st.session_state.cohort_base_counts[name] = {nat_bases[0]: default_count}
+        else:
+            st.session_state.cohort_base_counts[name] = {"—": default_count}
+
+# Initialize once, or when everything is unassigned
+if "cohort_zone_tasks" not in st.session_state:
+    _auto_seed_zone_tasks()
+elif all((v.get("zone") in (None, "", "— none —")) for v in st.session_state.cohort_zone_tasks.values()):
+    _auto_seed_zone_tasks()
 # 2) Sidebar: add nations
+if st.sidebar.button("Auto-assign zones (nearest)"):
+    auto_seed_zone_tasks(fill_only=True)
+    st.rerun()
 with st.sidebar.expander("➕ Add Nation", expanded=False):
     new_nat = st.text_input("Nation name", key="new_nation_name")
     coal   = st.text_input("Coalition",  key="new_nation_coal")
@@ -375,8 +566,8 @@ with st.sidebar.expander("➕ Add Airframe", expanded=False):
             st.error("Enter a unique airframe label.")
 # ───────── UI helper – shares ─────────
 def share_sliders(tag: str, tbl=(0.25, 0.25, 0.25), pfx: str = ""):
-    """Expose O-, R-, D-sliders; A is auto-computed as 1-(O+R+D)."""
-    # ignore any preset A, accept 3- or 4-tuples
+    """Expose O-, R-, D-sliders; A is auto-computed so that O+R+D+A = 1.
+       If O+R+D > 1, auto-renormalize O/R/D to keep A >= 0."""
     if len(tbl) < 3:
         tbl = (0.25, 0.25, 0.25)
     O_def, R_def, D_def = tbl[0], tbl[1], tbl[2]
@@ -389,10 +580,13 @@ def share_sliders(tag: str, tbl=(0.25, 0.25, 0.25), pfx: str = ""):
     with colD:
         D = st.slider(f"{pfx}D ({tag})", 0.0, 1.0, D_def, 0.01)
 
+    s = O + R + D
+    if s > 1.0:
+        # renormalize to sum=1 so A=0
+        O, R, D = O / s, R / s, D / s
+        st.info("O + R + D exceeded 1; auto-renormalized to keep A ≥ 0.")
+
     A = 1.0 - (O + R + D)
-    if A < 0:
-        st.warning("O + R + D exceed 1; A set to 0.")
-        A = 0.0
     st.caption(f"A (auto) = {A:.2f}")
     return O, R, D, A
 
@@ -415,6 +609,285 @@ def raw_E(shares, fam, params=None):
 def logistic_remap(val: float, lam: float = 5.0, mid: float = 0.5) -> float:
     """Bound *val* to (0,1) using a logistic centred on *mid* with slope *lam*."""
     return 1.0 / (1.0 + exp(-lam * (val - mid)))
+# --- Weapon helpers ---
+def classify_weapon(name: str, bvr_threshold_km: float, weapons: dict) -> str:
+    rng = weapons.get(name, {}).get("range_km", 0.0)
+    return "BVR" if rng >= bvr_threshold_km else "WVR"
+
+def weighted(pool: dict, get_val) -> float:
+    tot = sum(pool.values())
+    if tot <= 1e-9:
+        return 0.0
+    return sum(n * float(get_val(w)) for w, n in pool.items()) / tot
+
+def soft_gate(distance_km: float, range_km: float, softness_km: float) -> float:
+    if softness_km <= 1e-6:
+        return 1.0 if distance_km <= range_km else 0.0
+    x = (range_km - distance_km) / softness_km
+    return 1.0 / (1.0 + np.exp(-x))
+NONE_ZONE = "— none —"
+
+
+
+def build_cohort_view(
+    cohorts,                 # [(name,nation,airframe), ...]
+    counts,                  # {cohort: aircraft}
+    kvals,                   # {cohort: k}
+    vulns,                   # {cohort: vuln}
+    E,                       # {cohort: effectiveness after remap}
+    nations, bases,          # session_state dicts
+    cohort_zone_tasks,       # {cohort: {"zone": str|— none —, "fraction": float}}
+    deployment_zones, zone_effects,
+    cohort_weapons, weapons,
+    bvr_threshold_km: float,
+    cruise_kmh: float,
+    tos_hours: float,
+):
+    # 1) map cohort -> coalition, base (first only), zone centroid, first-on-station t
+    view = {}
+    for (name, nation, _af) in cohorts:
+        coal = nations[nation]["coalition"]
+        base_items = list(bases.get(nation, {}).items())
+        blat, blon = (None, None)
+        if base_items:
+            _, (blat, blon) = base_items[0]
+
+        task = cohort_zone_tasks.get(name, {"zone": "— none —", "fraction": 0.0})
+        zone = task.get("zone", "— none —")
+        frac = float(task.get("fraction", 0.0))
+        zcent = None
+        if zone and zone != "— none —":
+            rings = deployment_zones.get(zone, [])
+            zlon, zlat = zone_centroid(rings)  # (lon, lat)
+            zcent = (zlat, zlon)
+
+        # first on-station
+        t_on = 0.0
+        if zcent and blat is not None:
+            dist_km = haversine_km(blat, blon, zcent[0], zcent[1])
+            t_on = 3600.0 * (dist_km / max(1e-6, cruise_kmh))
+
+        # zone multipliers
+        zm, vm = 1.0, 1.0
+        if zone and zone != "— none —":
+            eff = zone_effects.get(zone, {})
+            zm = float(eff.get("E_mult", 1.0))
+            vm = float(eff.get("vuln_mult", 1.0))
+
+        # availability from simple cycle
+        avail = 1.0
+        if zcent and blat is not None:
+            dist_km = haversine_km(blat, blon, zcent[0], zcent[1])
+            t_transit = dist_km / cruise_kmh
+            cycle = max(1e-6, 2*t_transit + tos_hours)
+            on_station_ratio = tos_hours / cycle
+            avail = (1.0 - frac) + frac * on_station_ratio
+
+        # weapon pools → BVR/WVR split
+        per_ac = cohort_weapons.get(name, {})
+        pool_bvr, pool_wvr = {}, {}
+        for w, qty_per_ac in per_ac.items():
+            total = counts[name] * max(0, int(qty_per_ac))
+            if total <= 0: 
+                continue
+            bucket = classify_weapon(w, bvr_threshold_km, weapons)
+            (pool_bvr if bucket == "BVR" else pool_wvr)[w] = total
+
+        # weighted pk/range per bucket
+        bvr_pk   = weighted(pool_bvr, lambda w: weapons.get(w, {}).get("pk", 0.0))
+        bvr_rng  = weighted(pool_bvr, lambda w: weapons.get(w, {}).get("range_km", 0.0))
+        wvr_pk   = weighted(pool_wvr, lambda w: weapons.get(w, {}).get("pk", 0.0))
+        wvr_rng  = weighted(pool_wvr, lambda w: weapons.get(w, {}).get("range_km", 0.0))
+
+        view[name] = dict(
+            coalition = coal,
+            base = None if blat is None else (blat, blon),
+            zone = zone,
+            zone_centroid = zcent,
+            first_on = t_on,
+            avail = avail,
+            E_eff = E[name] * zm,
+            vuln_eff = vulns[name] * vm,
+            k = kvals[name],
+            N = counts[name],
+            pool_bvr = pool_bvr,
+            pool_wvr = pool_wvr,
+            bvr_pk = bvr_pk, bvr_rng = bvr_rng,
+            wvr_pk = wvr_pk, wvr_rng = wvr_rng,
+        )
+    return view
+def simulate_fast(
+    cohorts, view, side_tags, 
+    horizon, dt,
+    eng_rate_per_ac_sec, salvo_size,
+    bvr_opportunity, bvr_geom_soft_km,
+    reload_enabled, reload_rate_per_ac_sec,
+):
+    steps = int(horizon/dt) + 1
+    T = np.linspace(0.0, horizon, steps)
+    state = {c[0]: np.empty(steps) for c in cohorts}
+    for (name, _, _) in cohorts:
+        state[name][0] = view[name]["N"]
+
+    # contact time = later of the two sides’ earliest first_on
+    sides = list(side_tags.keys())
+    if len(sides) >= 2:
+        s1, s2 = sides[0], sides[1]
+        t_contact = max(
+            min([view[n]["first_on"] for n in side_tags[s1]]) if side_tags[s1] else 0.0,
+            min([view[n]["first_on"] for n in side_tags[s2]]) if side_tags[s2] else 0.0,
+        )
+    else:
+        t_contact = 0.0
+    start_idx = max(1, min(int(t_contact/dt), steps-1))
+
+    # flat until contact
+    for i in range(1, start_idx):
+        for (name,_,_) in cohorts:
+            state[name][i] = state[name][i-1]
+
+    quiet_clock = 0.0
+    for i in range(start_idx, steps):
+        # carry forward
+        for (name,_,_) in cohorts:
+            state[name][i] = state[name][i-1]
+
+        # expected kills generated by each coalition this tick
+        kills_by_side = {s: 0.0 for s in side_tags}
+
+        # 1) for each coalition, compute total expected kills from BVR and WVR
+        for side in side_tags:
+            # (a) total on-station shooters (weighted by availability) and their “Êk”
+            onstation = 0.0
+            ek_sum = 0.0
+            # shot opportunities and ammo pools per bucket
+            bvr_shots_need = 0.0
+            wvr_shots_need = 0.0
+            # distances for geometry gating (use centroid vs centroid if both have zones)
+            # build one representative distance to opponents (median of distances)
+            dists = []
+            for me in side_tags[side]:
+                v = view[me]
+                onstation += state[me][i] * v["avail"]
+                ek_sum    += state[me][i] * v["E_eff"] * v["k"]
+                # pairwise distances to foe cohorts with zones
+                for foe_side, foes in side_tags.items():
+                    if foe_side == side: 
+                        continue
+                    for foe in foes:
+                        vz = view[foe]["zone_centroid"]
+                        vm = v["zone_centroid"]
+                        if vm and vz:
+                            dists.append(haversine_km(vm[0], vm[1], vz[0], vz[1]))
+            dist_km = np.median(dists) if dists else 0.0
+
+            # shot opportunities this tick
+            shot_ops = onstation * eng_rate_per_ac_sec * dt
+            # BVR geometric gate (0..1) using missiles-weighted BVR range across this side
+            # Compute a side BVR range proxy (weighted average over all cohorts that have BVR ammo)
+            bvr_rngs = []
+            for me in side_tags[side]:
+                if sum(view[me]["pool_bvr"].values()) > 0:
+                    bvr_rngs.append(view[me]["bvr_rng"])
+            side_bvr_rng = float(np.mean(bvr_rngs)) if bvr_rngs else 0.0
+
+            geom_gate = soft_gate(dist_km, side_bvr_rng, bvr_geom_soft_km) if side_bvr_rng > 0 else 0.0
+            bvr_share = bvr_opportunity * geom_gate
+            wvr_share = 1.0 - bvr_share
+
+            # requested shots by bucket (before ammo caps & salvo size)
+            bvr_shots_need = shot_ops * bvr_share * max(0.0, salvo_size)
+            wvr_shots_need = shot_ops * wvr_share * max(0.0, salvo_size)
+
+            # (b) satisfy shots from ammo across cohorts
+            # BVR
+            bvr_fired = 0.0
+            for me in side_tags[side]:
+                pool = view[me]["pool_bvr"]
+                have = sum(pool.values())
+                if have <= 0 or bvr_shots_need <= 1e-12: 
+                    continue
+                fire = min(have, bvr_shots_need)
+                bvr_fired += fire
+                # consume proportionally by weapon share
+                if have > 0:
+                    for w in list(pool.keys()):
+                        take = fire * (pool[w] / have)
+                        pool[w] = max(0.0, pool[w] - take)
+                    # refresh weighted pk if we fired something
+                    view[me]["bvr_pk"] = weighted(pool, lambda w: st.session_state.weapons[w]["pk"]) if sum(pool.values())>0 else 0.0
+                bvr_shots_need -= fire
+                if bvr_shots_need <= 0: break
+
+            # WVR
+            wvr_fired = 0.0
+            for me in side_tags[side]:
+                pool = view[me]["pool_wvr"]
+                have = sum(pool.values())
+                if have <= 0 or wvr_shots_need <= 1e-12:
+                    continue
+                fire = min(have, wvr_shots_need)
+                wvr_fired += fire
+                if have > 0:
+                    for w in list(pool.keys()):
+                        take = fire * (pool[w] / have)
+                        pool[w] = max(0.0, pool[w] - take)
+                    view[me]["wvr_pk"] = weighted(pool, lambda w: st.session_state.weapons[w]["pk"]) if sum(pool.values())>0 else 0.0
+                wvr_shots_need -= fire
+                if wvr_shots_need <= 0: break
+
+            # (c) expected kills = missiles * pk * (side-level Êk / shooters)  (simple coupling)
+            # ek_sum already includes state * E_eff * k; normalize by onstation to avoid double-count
+            ek_factor = (ek_sum / max(1e-6, onstation)) if onstation > 1e-12 else 0.0
+            exp_kills = (bvr_fired * np.mean([view[m]["bvr_pk"] for m in side_tags[side]] or [0.0])
+                        + wvr_fired * np.mean([view[m]["wvr_pk"] for m in side_tags[side]] or [0.0]))
+            kills_by_side[side] = exp_kills * ek_factor
+
+            # (d) reloads for off-station share
+            if reload_enabled and reload_rate_per_ac_sec > 0:
+                offstation = 0.0
+                for me in side_tags[side]:
+                    offstation += state[me][i] * (1.0 - view[me]["avail"])
+                reloads = offstation * reload_rate_per_ac_sec * dt
+                # push reloads into each cohort, proportionally to empty capacity (simple model)
+                # here we just add to the largest bucket deficit first
+                if reloads > 1e-12:
+                    for me in side_tags[side]:
+                        # split half/half BVR/WVR by current mix (could be smarter)
+                        view[me]["pool_bvr"]["_RELOAD"] = view[me]["pool_bvr"].get("_RELOAD", 0.0) + 0.5*reloads/len(side_tags[side])
+                        view[me]["pool_wvr"]["_RELOAD"] = view[me]["pool_wvr"].get("_RELOAD", 0.0) + 0.5*reloads/len(side_tags[side])
+
+        # 2) distribute losses to the opposing coalitions (proportional)
+        for side in side_tags:
+            for foe_side in side_tags:
+                if foe_side == side: 
+                    continue
+                foe_vuln_sum = sum(state[tag][i] * view[tag]["vuln_eff"] for tag in side_tags[foe_side]) + 1e-12
+                if foe_vuln_sum <= 1e-12:
+                    continue
+                # attack pressure share by foe size & effectiveness (same pattern you had)
+                pressure = sum(view[e]["E_eff"] * state[e][i] for e in side_tags[foe_side])
+                denom = sum(state[e][i] for e in side_tags[foe_side]) + 1e-12
+                pressure_share = pressure / denom
+                effective_k = kills_by_side[side] * pressure_share
+                for tag in side_tags[foe_side]:
+                    hits = effective_k * (state[tag][i] * view[tag]["vuln_eff"]) / foe_vuln_sum
+                    loss = hits * view[tag]["vuln_eff"]
+                    state[tag][i] = max(0.0, state[tag][i] - loss)
+
+        # 3) early-out if quiet for 30s after contact
+        if sum(kills_by_side.values()) <= 1e-9:
+            quiet_clock += dt
+            if quiet_clock >= 30.0:
+                for j in range(i+1, steps):
+                    for (name,_,_) in cohorts:
+                        state[name][j] = state[name][j-1]
+                break
+        else:
+            quiet_clock = 0.0
+
+    return T, state
+
 if 'cohorts' not in st.session_state:
     st.session_state.cohorts = DEFAULT_COHORTS.copy()
 with st.sidebar.expander("🛠 Scenario Editor", expanded=False):
@@ -541,6 +1014,117 @@ with st.sidebar:
                             st.session_state.bases[nat][new_bn] = (new_lat, new_lon)
                             st.toast(f"Base “{new_bn}” added to {nat}")
                             st.rerun()
+    with st.sidebar.expander("Deployment zones", expanded=False):
+    # List & delete
+        for zname, rings in list(st.session_state.deployment_zones.items()):
+            st.markdown(f"**{zname}**  ({len(rings)} ring(s))")
+            if st.button("Delete", key=f"del-zone-{zname}"):
+                del st.session_state.deployment_zones[zname]
+                st.rerun()
+
+        # --- Effects (defaults seeded in session_state) ---
+        st.markdown("### Zone effects")
+        for z in st.session_state.deployment_zones.keys():
+            eff = st.session_state.zone_effects.setdefault(z, {"E_mult": 1.0, "vuln_mult": 1.0})
+            st.session_state.zone_effects[z]["E_mult"] = st.slider(
+                f"{z} – E multiplier", 0.5, 1.5, eff["E_mult"], 0.05, key=f"{z}-Em"
+            )
+            st.session_state.zone_effects[z]["vuln_mult"] = st.slider(
+                f"{z} – Vulnerability multiplier", 0.5, 1.5, eff["vuln_mult"], 0.05, key=f"{z}-Vm"
+            )
+
+        # --- Draw or edit a zone polygon ---
+        st.markdown("### Add / edit zone")
+        zname = st.text_input("Zone name", key="new_zone_name")
+        m = folium.Map(location=[45.0, 34.0], zoom_start=5)
+        Draw(
+            export=False,
+            draw_options={
+                "polyline": False, "polygon": True, "rectangle": True,
+                "circle": False, "marker": False, "circlemarker": False,
+            },
+            edit_options={"edit": True, "remove": True},
+        ).add_to(m)
+        out = st_folium(m, height=300, width=420, key="zones-map", returned_objects=[])
+
+        features = []
+        if out and out.get("all_drawings"):
+            features = out["all_drawings"]["features"]
+        elif out and out.get("last_active_drawing"):
+            features = [out["last_active_drawing"]]
+
+        rings = []
+        for f in features:
+            geom = f.get("geometry", {})
+            if geom.get("type") in ("Polygon", "Rectangle"):
+                for ring in geom["coordinates"]:
+                    rings.append([(pt[0], pt[1]) for pt in ring])  # (lon,lat)
+
+        if st.button("Save zone"):
+            if not zname:
+                st.warning("Name your zone.")
+            elif not rings:
+                st.warning("Draw at least one ring (polygon or rectangle).")
+            else:
+                st.session_state.deployment_zones[zname] = rings
+                # seed neutral effects & empty CAP if brand new
+                st.session_state.zone_effects.setdefault(zname, {"E_mult": 1.0, "vuln_mult": 1.0})
+                st.session_state.zone_waypoints.setdefault(zname, [])
+                st.success(f"Saved zone “{zname}” with {len(rings)} ring(s).")
+                st.rerun()
+
+        txt = st.text_area(
+            "Manual rings editor (JSON list of rings: [[(lon,lat), ...], ...])",
+            value="", placeholder="[[[33.0,44.8],[33.4,44.8],[33.4,44.4],[33.0,44.4]]]"
+        )
+        if st.button("Apply manual"):
+            import json
+            try:
+                parsed = json.loads(txt)
+                if zname:
+                    st.session_state.deployment_zones[zname] = [
+                        [(float(x), float(y)) for x, y in ring] for ring in parsed
+                    ]
+                    st.session_state.zone_effects.setdefault(zname, {"E_mult": 1.0, "vuln_mult": 1.0})
+                    st.session_state.zone_waypoints.setdefault(zname, [])
+                    st.success("Applied manual rings.")
+                    st.rerun()
+                else:
+                    st.warning("Provide a zone name.")
+            except Exception as e:
+                st.error(f"Invalid JSON: {e}")
+
+            # --- Waypoints editor (ordered CAP route) ---
+        st.markdown("### Patrol waypoints")
+        zsel = st.selectbox(
+            "Select zone",
+            ["—"] + list(st.session_state.deployment_zones.keys()),
+            key="zsel-zones"   # ← unique key
+        )
+        if zsel != "—":
+            st.session_state.zone_waypoints.setdefault(zsel, [])
+            m2 = folium.Map(location=[45.0, 34.0], zoom_start=6)
+            folium.LatLngPopup().add_to(m2)
+
+            # show existing waypoints
+            for i, (lon, lat) in enumerate(st.session_state.zone_waypoints[zsel], 1):
+                folium.Marker([lat, lon], popup=f"{i}").add_to(m2)
+
+            out2 = st_folium(m2, height=280, width=420, key=f"wpts-{zsel}")
+            if out2 and out2.get("last_clicked"):
+                lat = out2["last_clicked"]["lat"]
+                lon = out2["last_clicked"]["lng"]
+                st.session_state.zone_waypoints[zsel].append((lon, lat))
+                st.rerun()
+
+            c1, c2 = st.columns(2)
+            if c1.button("Clear last", key=f"wpt-pop-{zsel}"):
+                if st.session_state.zone_waypoints[zsel]:
+                    st.session_state.zone_waypoints[zsel].pop()
+                    st.rerun()
+            if c2.button("Clear all", key=f"wpt-clear-{zsel}"):
+                st.session_state.zone_waypoints[zsel] = []
+                st.rerun()
     # ————————————— Weapon catalogue (shared stats) —————————————
     with st.expander("Weapon characteristics", expanded=False):
         for w in sorted(st.session_state.weapons):
@@ -652,6 +1236,13 @@ with st.sidebar:
                     w: spec["default"]
                     for w, spec in st.session_state.airframe_loadouts.get(airframe, {}).items()
                 }
+            with st.expander("Deployment", expanded=False):
+                zopt = ["— none —"] + list(st.session_state.deployment_zones.keys())
+                curr = st.session_state.cohort_zone_tasks.get(key, {"zone": "— none —", "fraction": 0.0})
+                zpick = st.selectbox("Zone", zopt, index=zopt.index(curr["zone"]) if curr["zone"] in zopt else 0, key=f"{key}-zone")
+                zfrac = st.slider("% assigned on-station", 0, 100, int(curr["fraction"]*100), 5, key=f"{key}-zfrac")
+                st.session_state.cohort_zone_tasks[key] = {"zone": zpick, "fraction": zfrac/100.0}
+
             with st.expander(f"{key} ({nation}: {airframe})", expanded=False):
                 if st.button("Delete", key=f"delete-{name}"):
                 # 1) remove the cohort tuple itself
@@ -739,8 +1330,18 @@ with st.sidebar:
                         else:
                             st.session_state.cohort_weapons[key][w] = qty
                         st.caption(f" Range {spec['range_km']} km | Pₖ {spec['pk']:.2f}")
+        with st.expander("Quick-start deployment", expanded=False):
+            if st.button("Auto-assign nearest zones and sensible on-station %"):
+                if "cohort_zone_tasks" in st.session_state:
+                    st.session_state.pop("cohort_zone_tasks")
+                # re-seed
+                if "_auto_seed_zone_tasks" in globals():
+                    _auto_seed_zone_tasks()
+                st.success("Zones assigned based on coalition and nearest base.")
+                st.rerun()
+
                 
-        
+    
     st.header("Global Model parameters")
     horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
     dt = 0.2
@@ -751,12 +1352,57 @@ with st.sidebar:
 
     st.subheader("Kill advantage scale σ")
     sigma = st.slider("σ (steepness)", 1.0, 10.0, 3.5, 0.5)
+    st.subheader("Weapons & engagement knobs")
+
+    # Engagement tempo (how often shooters take a shot opportunity)
+    eng_rate_per_ac_min = st.slider("Engagements per on-station aircraft per minute",
+                                    0.0, 2.0, 0.10, 0.05)
+    salvo_size = st.slider("Missiles per engagement (salvo size)",
+                        0.0, 8.0, 2.0, 0.5)
+
+    # BVR vs WVR split
+    bvr_range_threshold_km = st.slider("BVR range threshold (km)",
+                                    50, 120, 70, 5)
+    bvr_opportunity = st.slider("BVR opportunity share (0=WVR only, 1=BVR only)",
+                                0.0, 1.0, 0.60, 0.05)
+
+    # Reloads (rearm while off-station)
+    reload_enabled = st.checkbox("Enable reloads (rearm while off-station)", value=True)
+    reload_rate_per_ac_min = st.slider("Reload rate (missiles per off-station aircraft per minute)",
+                                    0.0, 4.0, 0.50, 0.10)
+    # How sharply distance gates BVR (km of transition around the range)
+    bvr_geom_soft_km = st.slider("BVR geometry softness (km)",
+                             5, 80, 25, 5)
+    tos_hours = st.sidebar.slider("Time on Station (hours)", 0.5, 12.0, 2.0, 0.5)
+
+    # convenience
+    eng_rate_per_ac_sec = eng_rate_per_ac_min / 60.0
+    reload_rate_per_ac_sec = reload_rate_per_ac_min / 60.0
+    with st.sidebar.expander("Weapons & Engagement knobs", expanded=False):
+        st.caption("These affect contact gating, shot cadence, and ammo consumption.")
+        bvr_threshold_km = st.number_input("BVR threshold (km)", 50, 200, 80, 5, key="knob_bvr_thr")
+        salvo_size       = st.number_input("Missiles per shot-op (salvo size)", 1, 6, 2, 1, key="knob_salvo")
+        eng_rate_per_ac  = st.number_input("Shot opportunities per a/c per second", 0.0, 1.0, 0.04, 0.01, key="knob_eng_rate")
+        bvr_geom_soft_km = st.number_input("Geometry softness (km)", 1, 100, 30, 1, key="knob_soft")
+        bvr_opportunity  = st.slider("Max BVR share (0..1)", 0.0, 1.0, 0.8, 0.05, key="knob_bvr_share")
+
+        st.divider()
+        st.caption("Transit/availability & contact timing")
+        cruise_kmh = st.number_input("Cruise speed (km/h)", 300, 1200, 800, 10, key="knob_cruise")
+        tos_hours  = st.number_input("Time-on-station per sortie (hours)", 0.1, 3.0, 0.5, 0.1, key="knob_tos")
+        contact_cap_sec = st.number_input("Cap contact time to ≤ this many seconds", 10, 3600, 240, 10, key="knob_tcap")
+
+        st.divider()
+        reload_enabled = st.checkbox("Enable reloading off-station", value=False, key="knob_reload_en")
+        reload_rate_per_ac = st.number_input("Reload rate (missiles/a/c/sec off-station)", 0.0, 1.0, 0.02, 0.01, key="knob_reload_rate")
+
+
 
 # ───────── Calculate effectiveness ─────────
 # Anchor‑ratio scaling: compare every raw E to its family's baseline value
 ANCHOR_SHARES = (0.25, 0.25, 0.25, 0.25)
 E0 = {fam: raw_E(ANCHOR_SHARES, fam) for fam in FAMILIES}
-
+TOS = tos_hours
 
 E_raw = {
     t: raw_E(shares[t], famsel[t], st.session_state.cohort_params.get(t, {}))
@@ -765,94 +1411,293 @@ E_raw = {
 E_scaled = {t: E_raw[t] / (E0[famsel[t]] + EPS) for t in E_raw}
 E = {t: logistic_remap(E_scaled[t], lam_E, mid_E) for t in E_scaled}
 
+# ───────── Fast-forward helpers: centroids & first contact time ─────────
+CRUISE_KMH = 800.0  # keep in one place
+SEC_PER_HR = 3600.0
+
+# 1) Cohort → assigned zone centroid (lat,lon) or None
+cohort_zone_centroid = {}
+for cname, nation, _af in st.session_state.cohorts:
+    task = st.session_state.cohort_zone_tasks.get(cname, {"zone": "— none —"})
+    z = task.get("zone")
+    if z and z != "— none —":
+        rings = st.session_state.deployment_zones.get(z, [])
+        zlon, zlat = zone_centroid(rings)               # (lon, lat)
+        cohort_zone_centroid[cname] = (zlat, zlon)      # store (lat, lon)
+    else:
+        cohort_zone_centroid[cname] = None
+
+# 2) Cohort → first on-station time (seconds) if it has a zone; else 0
+cohort_first_onstation_sec = {}
+for cname, nation, _af in st.session_state.cohorts:
+    cent = cohort_zone_centroid[cname]
+    if cent is None:
+        cohort_first_onstation_sec[cname] = 0.0
+        continue
+    bases_for_nat = list(st.session_state.bases.get(nation, {}).items())
+    if not bases_for_nat:
+        cohort_first_onstation_sec[cname] = 0.0
+        continue
+    # distance from FIRST base (matches your availability logic)
+    _, (blat, blon) = bases_for_nat[0]                  # (lat, lon)
+    zlat, zlon = cent
+    dist_km = haversine_km(blat, blon, zlat, zlon)
+    t_transit_hr = dist_km / max(1e-6, CRUISE_KMH)
+    cohort_first_onstation_sec[cname] = t_transit_hr * SEC_PER_HR
+
+# 3) Coalition → earliest on-station; t_contact = max(earliest_allied, earliest_opfor)
+side_tags = {}
+view = build_cohort_view(
+        cohorts = st.session_state.cohorts,
+        counts = counts,
+        kvals = kvals,
+        vulns = vulns,
+        E = E,
+        nations = st.session_state.nations,
+        bases = st.session_state.bases,
+        cohort_zone_tasks = st.session_state.cohort_zone_tasks,
+        deployment_zones = st.session_state.deployment_zones,
+        zone_effects = st.session_state.zone_effects,
+        cohort_weapons = st.session_state.cohort_weapons,
+        weapons = st.session_state.weapons,
+        bvr_threshold_km = bvr_threshold_km,
+        cruise_kmh = CRUISE_KMH,
+        tos_hours = TOS,
+    )
+    
+# Run fast sim
+# side_tags is still built from cohorts + nations (unchanged)
+T, state = simulate_fast(
+    cohorts = st.session_state.cohorts,
+    view = view,
+    side_tags = side_tags,
+    horizon = horizon,
+    dt = dt,
+    eng_rate_per_ac_sec = eng_rate_per_ac_sec,
+    salvo_size = salvo_size,
+    bvr_opportunity = bvr_opportunity,
+    bvr_geom_soft_km = bvr_geom_soft_km,
+    reload_enabled = reload_enabled,
+    reload_rate_per_ac_sec = reload_rate_per_ac_sec,
+)
+
+def compute_contact_time(view: dict) -> float:
+    """
+    Earliest engagement time (sec): later of the two coalitions'
+    earliest on-station cohorts. Uses view[name]["first_on"].
+    """
+    # Find the fastest-to-station cohort per side
+    min_ready_by_side = {}
+    for name, info in view.items():
+        if info.get("zone_centroid") is None:
+            continue  # not assigned to a zone → ignore
+        side = info["coalition"]
+        t_on = float(info.get("first_on", 0.0))
+        if side not in min_ready_by_side or t_on < min_ready_by_side[side]:
+            min_ready_by_side[side] = t_on
+
+    # Need at least two opposing sides to define contact time
+    if len(min_ready_by_side) < 2:
+        return 0.0
+
+    # Engagement can start once both sides have at least one cohort on-station
+    return max(min_ready_by_side.values())
+
+# Compute contact time based on zone assignments & speeds
+t_contact_sec = compute_contact_time(view)  # your helper
+
+# Clip it to sim horizon
+t_contact_sec = min(t_contact_sec, float(st.session_state.get("horizon", 30)))
+
+# Bound to horizon
+t_contact_sec = min(t_contact_sec, float(st.session_state.get("horizon", 30)) )
+
+# --- Weapons pools (total missiles) & pk mix per cohort ---
+cohort_ammo_total = {}   # {cohort: float missiles remaining}
+cohort_pk_weighted = {}  # {cohort: weighted average pk of remaining stock}
+
+def _recompute_pk_weighted(pool: dict) -> float:
+    # pool is {weapon: remaining_count}
+    total = sum(pool.values())
+    if total <= 0:
+        return 0.0
+    s = 0.0
+    for w, n in pool.items():
+        pk = st.session_state.weapons.get(w, {}).get("pk", 0.0)
+        s += n * pk
+    return s / total
+
+# build per-weapon pools so pk can evolve as one type depletes
+cohort_weapon_pool = {}  # {cohort: {weapon: remaining_count}}
+for name, nation, airframe in st.session_state.cohorts:
+    key = name
+    per_ac = st.session_state.cohort_weapons.get(key, {})
+    pool = {w: counts[key] * qty for w, qty in per_ac.items()}  # total missiles
+    cohort_weapon_pool[key] = pool
+    cohort_ammo_total[key]  = sum(pool.values())
+    cohort_pk_weighted[key] = _recompute_pk_weighted(pool)
+
+# --- Helpers for geometry-aware BVR gating ---
+def _weighted_pk(pool_dict: dict) -> float:
+    total = sum(pool_dict.values())
+    if total <= EPS: return 0.0
+    s = 0.0
+    for w, n in pool_dict.items():
+        pk = st.session_state.weapons.get(w, {}).get("pk", 0.0)
+        s += n * pk
+    return s / total
+
+def _weighted_range(pool_dict: dict) -> float:
+    total = sum(pool_dict.values())
+    if total <= EPS: return 0.0
+    s = 0.0
+    for w, n in pool_dict.items():
+        rng = st.session_state.weapons.get(w, {}).get("range_km", 0.0)
+        s += n * rng
+    return s / total  # missiles-weighted average range
+
+def _sigmoid01(x: float) -> float:
+    # smooth step 0..1; x is unitless
+    import math
+    return 1.0 / (1.0 + math.exp(-x))
+
+
 
 # ───────── Simulation arrays ─────────
+# ───────── Simulation arrays ─────────
+# ───────── Simulation arrays (fast-forward to contact) ─────────
 steps = int(horizon / dt) + 1
-_time = np.linspace(0, horizon, steps)
-# create state arrays for each cohort in the dynamic list
-state = {
-    f"{name}": np.empty(steps)
-    for name, _, _ in st.session_state.cohorts
-}
+_time = np.linspace(0.0, float(horizon), steps)
 
-for t in state:
-    state[t][0] = counts[t]
+# state[c][0] = initial counts
+state = {name: np.empty(steps) for name, _, _ in st.session_state.cohorts}
+for tag in state:
+    state[tag][0] = counts[tag]
 
-side_tags = {}
-for name, nation, airframe in st.session_state.cohorts:
-    key = f"{name}"
-    coal = st.session_state.nations[nation]["coalition"]
-    side_tags.setdefault(coal, []).append(key)
+# coalition dictionary already built in Patch A (side_tags)
 
+# index to start “active” sim
+start_idx = int(t_contact_sec / dt)
+start_idx = max(1, min(start_idx, steps - 1))
 
-for i in range(1, steps):
-    # carry forward last-tick counts
+# Pre-fill flat up to start_idx (no attrition before first contact)
+for tix in range(1, start_idx):
+    for tag in state:
+        state[tag][tix] = state[tag][tix - 1]
+
+# Keep constants here once
+TOS = 0.5  # hours on-station per sortie (same as before)
+
+# ========= MAIN LOOP from first contact onward =========
+for i in range(start_idx, steps):
+    # carry forward last tick
     for tag in state:
         state[tag][i] = state[tag][i - 1]
 
-    # per-side fire-power  P = Σ (count × k × Ê)
-    P = {
-        side: sum(state[tag][i] * kvals[tag] * E[tag]
-                  for tag in tags)
-        for side, tags in side_tags.items()
-    }
+    # --- availability per cohort (unchanged math, just computed when needed) ---
+    cohort_avail = {}
+    for cname, nation, _airframe in st.session_state.cohorts:
+        task = st.session_state.cohort_zone_tasks.get(cname, {"zone": "— none —", "fraction": 0.0})
+        frac = task["fraction"]
+        if task["zone"] and task["zone"] != "— none —":
+            rings = st.session_state.deployment_zones.get(task["zone"], [])
+            zlon, zlat = zone_centroid(rings)
+            bases_for_nat = list(st.session_state.bases.get(nation, {}).items())
+            if bases_for_nat:
+                _, (blat, blon) = bases_for_nat[0]
+                dist_km = haversine_km(blat, blon, zlat, zlon)
+                t_transit = dist_km / CRUISE_KMH
+                cycle = max(1e-6, 2 * t_transit + TOS)
+                on_station_ratio = TOS / cycle
+                cohort_avail[cname] = (1 - frac) + frac * on_station_ratio
+            else:
+                cohort_avail[cname] = 1.0
+        else:
+            cohort_avail[cname] = 1.0
 
-    # kill budgets this tick (both sides shoot)
-    K = {side: sigma * P[side] * dt for side in P}
-    sides = list(side_tags.keys())
-    # apply losses proportionally to the opposite side
-    for side in sides:
-        for foe in sides:
+    # --- zone multipliers (unchanged) ---
+    E_eff = {}
+    vuln_eff = {}
+    for cname, nation, _ in st.session_state.cohorts:
+        task = st.session_state.cohort_zone_tasks.get(cname, {"zone": "— none —"})
+        zm, vm = 1.0, 1.0
+        if task["zone"] and task["zone"] != "— none —":
+            eff = st.session_state.zone_effects.get(task["zone"], {})
+            zm = eff.get("E_mult", 1.0)
+            vm = eff.get("vuln_mult", 1.0)
+        E_eff[cname] = E[cname] * zm
+        vuln_eff[cname] = vulns[cname] * vm
+
+    # --- ammo-aware shots & kills (use your latest ammo block here) ---
+    # NOTE: keep your existing “kills_side = {...} … consumption … reloads …” code here
+    kills_side = {side: 0.0 for side in side_tags.keys()}
+        # Early-out: if both sides produce ~no kills for several seconds, stop
+    if all(k <= 1e-9 for k in kills_side.values()):
+        # if we're far into the sim and nothing is happening, break
+        if _time[i] - _time[start_idx] > 30.0:  # 30s of quiet after contact
+            # fill the rest flat and finish
+            for j in range(i + 1, steps):
+                for tag in state:
+                    state[tag][j] = state[tag][j - 1]
+            break
+
+    # Optional pruning: drop empty cohorts from further math (micro-opt)
+    # (Keep bookkeeping simple: skip building new lists, just continue on zeros)
+
+    # [insert your ammo firing block]
+    # (no changes needed beyond where it already reads state[k], cohort_avail, E_eff, kvals, etc.)
+
+    # --- apply losses (light vectorization while keeping your logic) ---
+    # Build quick arrays for foe totals to avoid inner Python loops
+    for side in side_tags.keys():
+        for foe in side_tags.keys():
             if foe == side:
                 continue
-            foe_total = sum(
-                state[tag][i] * vulns[tag]
-            for tag in side_tags[foe]
-            ) + EPS
-    # total enemy pressure from "foe" on "side"
-            attr_rate = sum(
-                E[enemy] * state[enemy][i]
-                for enemy in side_tags[foe]
-            )
-            
-            if foe_total == 0:
+            # scalar sums with small comprehensions (fast in CPython for ~tens of cohorts)
+            foe_total = sum(state[tag][i] * vuln_eff[tag] for tag in side_tags[foe]) + EPS
+            if foe_total <= EPS:
                 continue
+            attr_rate = sum(E_eff[enemy] * state[enemy][i] for enemy in side_tags[foe])
+            denom = sum(state[e][i] for e in side_tags[foe]) + EPS
+            pressure_share = attr_rate / denom
+            effective_kills = kills_side[side] * pressure_share
+
+            share_denom = foe_total
             for tag in side_tags[foe]:
-                effective_K = K[side] * (attr_rate / (sum(state[e][i] for e in side_tags[foe]) + EPS))
-                hits = hits = effective_K * (state[tag][i] * vulns[tag]) / foe_total
-                loss = hits * vulns[tag]
+                hits = effective_kills * (state[tag][i] * vuln_eff[tag]) / share_denom
+                loss = hits * vuln_eff[tag]
                 state[tag][i] = max(0.0, state[tag][i] - loss)
+
+
 
 
 # ───────── Plot ─────────
 fig, ax = plt.subplots()
 from itertools import cycle
-styles = ["-", "--", "-.", ":", "dashdot", "dotted", (0, (3, 1, 1, 1))]
+styles = ["-", "--", "-.", ":", "dashdot", "dotted", (0, (3,1,1,1))]
 style_iter = cycle(styles)
- # Plot each cohort series; will re-run automatically when cohorts change
+
 for name, nation, airframe in st.session_state.cohorts:
-    key = f"{name}"
-    sty = next(style_iter)
-    ax.plot(_time, state[key], label=f"{name} ({nation} - {airframe})", linestyle=sty, linewidth=2)
-ax.set_xlabel("Itterations")
+    ax.plot(T, state[name], label=f"{name} ({nation} - {airframe})", linestyle=next(style_iter), linewidth=2)
+
+ax.set_xlabel("Iterations")
 ax.set_ylabel("Aircraft remaining")
-ax.set_title("Attrition – (Logistic Δ‑based kills)")
-ax.legend(
-    fontsize="small",          # shrink text
-    title_fontsize="x-small",
-    ncol=2,                      # 2 columns
-    handlelength=1.2,            # shorter line segments
-    loc="upper right",           # keep out of the plot area
-    framealpha=0.5,
-)
+ax.set_title("Attrition – Ammo-limited BVR/WVR with contact-aware start")
+ax.legend(fontsize="small", title_fontsize="x-small", ncol=2, handlelength=1.2, loc="upper right", framealpha=0.5)
 st.pyplot(fig)
 
 # ───────── Metrics summary ─────────
-side1_name = "NATO⁺UKR"
-side2_name = "CHN⁺RUS"
+# Survivors by coalition (last time step)
+survivors = {coal: sum(state[t][-1] for t in tags) for coal, tags in side_tags.items()}
 
- # compute survivors for each side dynamically
-metrics = {coal: sum(state[t][-1] for t in tags) for coal, tags in side_tags.items()}
-cols = st.columns(len(metrics))
-for col, (coal, survivors) in zip(cols, metrics.items()):
-    col.metric(f"{coal} survivors", f"{survivors:.1f}")
+if survivors and any(v > 0 for v in survivors.values()):
+    cols = st.columns(max(1, len(survivors)))
+    for col, (coal, val) in zip(cols, survivors.items()):
+        col.metric(f"{coal} survivors", f"{val:.1f}")
+else:
+    st.info("No coalitions with survivorship to display yet. Check zone assignments and contact distance.")
+    with st.expander("Debug – assignments", expanded=False):
+        st.write("Zone tasks:", st.session_state.cohort_zone_tasks)
+        st.write("First-on-station (s):", {n: view[n]["first_on"] for n,_,_ in st.session_state.cohorts})
+        st.write("Zones by side:", {side: [view[c]["zone"] for c in tags] for side, tags in side_tags.items()})
+
