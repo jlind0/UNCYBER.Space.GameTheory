@@ -6,7 +6,9 @@ import matplotlib.pyplot as plt
 import folium
 import copy
 from streamlit_folium import st_folium
-from folium.plugins import Draw
+from folium.plugins import Draw, TimestampedGeoJson
+import datetime
+import pandas as pd
 with st.expander("About this app", expanded=False):
     st.markdown(
         """
@@ -82,8 +84,151 @@ Happy experimenting—may your model reveal the hidden corners of air-combat tem
     )
 # ────────────────────────────────────────────────
 EPS = 1e-9
+NONE_ZONE = "— none —"
 st.set_page_config(page_title="OODA – Six‑Cohort Duel", layout="wide")
 st.title("OODA Attrition – NATO & Ukraine vs China & Russia (4 + 5 Gen mix)")
+# ───────── Time-series map helpers ─────────
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+def _lerp_latlon(p1, p2, t):
+    # p = (lat, lon)
+    return (_lerp(p1[0], p2[0], t), _lerp(p1[1], p2[1], t))
+
+def _ring_point_latlon(wpts_latlon, u: float):
+    """
+    Interpolate along an ordered waypoint ring (lat,lon) with parameter u∈[0,1).
+    If <2 waypoints, just return the single point (hover at centroid handled by caller).
+    """
+    if not wpts_latlon:
+        return None
+    if len(wpts_latlon) == 1:
+        return wpts_latlon[0]
+    n = len(wpts_latlon)
+    total = n  # unit length per leg
+    x = (u % 1.0) * total
+    i = int(x) % n
+    j = (i + 1) % n
+    t = x - int(x)
+    return _lerp_latlon(wpts_latlon[i], wpts_latlon[j], t)
+
+def _position_at_time_sec(v: dict, t: float, cruise_kmh: float, tos_hours: float, ring_latlon):
+    """
+    Compute (lat, lon) for a cohort view 'v' at absolute time 't' seconds.
+    Pattern: base -> transit -> on-station patrol -> return -> repeat.
+    """
+    base = v.get("base")          # (lat, lon) or None
+    zcent = v.get("zone_centroid")# (lat, lon) or None
+    if not base or not zcent:
+        # If either missing, pin to whichever exists
+        return base or zcent or (45.0, 34.0)
+
+    # transit time (seconds)
+    dist_km = haversine_km(base[0], base[1], zcent[0], zcent[1])
+    t_transit = 3600.0 * (dist_km / max(1e-6, cruise_kmh))
+    t_station = 3600.0 * max(0.0, tos_hours)
+    cycle = max(1e-3, 2.0 * t_transit + t_station)
+    tm = t % cycle
+
+    # outbound
+    if tm < t_transit:
+        f = tm / max(1e-6, t_transit)
+        return _lerp_latlon(base, zcent, f)
+    # on-station patrol
+    if tm < t_transit + t_station and t_station > 0:
+        u = (tm - t_transit) / max(1e-6, t_station)  # 0..1
+        if ring_latlon and len(ring_latlon) >= 2:
+            return _ring_point_latlon(ring_latlon, u)
+        # No ring → hover on centroid
+        return zcent
+    # inbound
+    rem = tm - (t_transit + t_station)
+    f = rem / max(1e-6, t_transit)
+    return _lerp_latlon(zcent, base, f)
+
+def _build_ts_geojson(view: dict, duration_min: int, dt_sec: int,
+                      cruise_kmh: float, tos_hours: float) -> dict:
+    """
+    Build a FeatureCollection with MultiPoint geometry and matching ISO8601 timestamps.
+    One feature per **allocated base** (not just per cohort), colored by coalition.
+    """
+    start = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+    steps = max(1, int((duration_min * 60) / max(1, dt_sec)))
+    fc = {"type": "FeatureCollection", "features": []}
+    colors = {"Allied": "#2563eb", "Asia": "#dc2626"}
+
+    for name, v in view.items():
+        # precompute ring for patrol
+        ring = []
+        zname = v.get("zone")
+        if zname and zname != NONE_ZONE:
+            ring = [(latlon[1], latlon[0]) for latlon in st.session_state.zone_waypoints.get(zname, [])]
+            ring = [(p[0], p[1]) for p in ring]  # (lat,lon)
+
+        # choose base variants: either explicit multi-bases or the single default
+        base_variants = v.get("bases_multi") or [{"bname": None, "latlon": v.get("base"), "share": 1.0}]
+
+        for b in base_variants:
+            base_latlon = b["latlon"]
+            if not base_latlon:
+                continue
+            v2 = dict(v)
+            v2["base"] = base_latlon  # override just for the path computation
+
+            coords, times = [], []
+            for k in range(steps):
+                t = k * dt_sec
+                lat, lon = _position_at_time_sec(v2, t, cruise_kmh, tos_hours, ring)
+                coords.append([lon, lat])
+                times.append((start + datetime.timedelta(seconds=t)).isoformat())
+
+            coal = v.get("coalition", "")
+            color = colors.get(coal, "#10b981")
+            label = f"{name} @{b['bname']}" if b.get("bname") else name
+
+            feature = {
+                "type": "Feature",
+                "geometry": {"type": "MultiPoint", "coordinates": coords},
+                "properties": {
+                    "times": times,
+                    "style": {"color": color, "weight": 2, "opacity": 0.9},
+                    "icon": "circle",
+                    "iconstyle": {
+                        "fillColor": color, "fillOpacity": 0.9, "stroke": True,
+                        "radius": 6, "color": color,
+                    },
+                    "popup": label,
+                },
+            }
+            fc["features"].append(feature)
+
+    return fc
+
+
+def seed_zones_for_attrition(fill_only: bool = True, overlap_zone: str | None = None):
+    """
+    Assign all cohorts to a single overlap zone so dist_km≈0 and attrition occurs.
+    If overlap_zone is None, prefer Crimea-Central, then other Crimea tiles.
+    """
+    # Pick an overlap zone that actually exists
+    if overlap_zone is None:
+        for z in ("Crimea-Central", "Crimea-NE", "Crimea-NW", "Crimea-SE", "Crimea-SW"):
+            if z in st.session_state.deployment_zones:
+                overlap_zone = z
+                break
+        else:
+            overlap_zone = NONE_ZONE  # falls back cleanly
+
+    st.session_state.setdefault("cohort_zone_tasks", {})
+
+    for name, _nation, airframe in st.session_state.cohorts:
+        current = st.session_state.cohort_zone_tasks.get(name, {"zone": NONE_ZONE, "fraction": 0.0})
+        if fill_only and current.get("zone") not in (None, "", NONE_ZONE):
+            continue
+
+        stealthy = any(tag in airframe for tag in ("F-35", "J-20", "Su-57"))
+        frac = 0.70 if stealthy else 0.60
+        st.session_state.cohort_zone_tasks[name] = {"zone": overlap_zone, "fraction": frac}
 
 # ───────────────── Aggregation families ──────────────────
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -456,6 +601,39 @@ if "zone_effects" not in st.session_state:
         "Crimea-SE":      {"E_mult": 0.92, "vuln_mult": 1.15},
         "Crimea-All":     {"E_mult": 0.93, "vuln_mult": 1.15},
     }
+def _infer_end_count(tag: str, N0: int) -> int:
+    """
+    Try to infer the ending count for `tag` from whatever the sim produced.
+    Prefers absolute counts; falls back to alive fraction arrays; else N0.
+    """
+    ss = st.session_state
+    # Absolute series of counts per cohort
+    series_counts = getattr(ss, "series_counts", {})
+    if isinstance(series_counts, dict) and tag in series_counts and len(series_counts[tag]) > 0:
+        try:
+            return int(round(float(series_counts[tag][-1])))
+        except Exception:
+            pass
+
+    # Fraction alive per cohort
+    series_alive_frac = getattr(ss, "series_alive_frac", {})
+    if isinstance(series_alive_frac, dict) and tag in series_alive_frac and len(series_alive_frac[tag]) > 0:
+        try:
+            frac = float(series_alive_frac[tag][-1])
+            frac = max(0.0, min(1.0, frac))
+            return int(round(N0 * frac))
+        except Exception:
+            pass
+
+    # Final snapshot map
+    final_counts = getattr(ss, "final_counts", {})
+    if isinstance(final_counts, dict) and tag in final_counts:
+        try:
+            return int(final_counts[tag])
+        except Exception:
+            pass
+
+    return int(N0)
 
 # --- Cohort zone assignment defaults ---
 # --- Cohort zone assignment defaults (auto-seeded & distance-aware) ---
@@ -525,14 +703,15 @@ if "cohort_base_counts" not in st.session_state:
             st.session_state.cohort_base_counts[name] = {"—": default_count}
 
 # Initialize once, or when everything is unassigned
-if "cohort_zone_tasks" not in st.session_state:
-    _auto_seed_zone_tasks()
-elif all((v.get("zone") in (None, "", "— none —")) for v in st.session_state.cohort_zone_tasks.values()):
-    _auto_seed_zone_tasks()
+if "cohort_zone_tasks" not in st.session_state or \
+   all(v.get("zone") in (None, "", NONE_ZONE) for v in st.session_state.cohort_zone_tasks.values()):
+    seed_zones_for_attrition(fill_only=False)
+
 # 2) Sidebar: add nations
-if st.sidebar.button("Auto-assign zones (nearest)"):
-    auto_seed_zone_tasks(fill_only=True)
+if st.sidebar.button("Auto-assign zones (attrition)"):
+    seed_zones_for_attrition(fill_only=False)
     st.rerun()
+
 with st.sidebar.expander("➕ Add Nation", expanded=False):
     new_nat = st.text_input("Nation name", key="new_nation_name")
     coal   = st.text_input("Coalition",  key="new_nation_coal")
@@ -630,28 +809,44 @@ NONE_ZONE = "— none —"
 
 
 def build_cohort_view(
-    cohorts,                 # [(name,nation,airframe), ...]
-    counts,                  # {cohort: aircraft}
-    kvals,                   # {cohort: k}
-    vulns,                   # {cohort: vuln}
-    E,                       # {cohort: effectiveness after remap}
-    nations, bases,          # session_state dicts
-    cohort_zone_tasks,       # {cohort: {"zone": str|— none —, "fraction": float}}
+    cohorts, counts, kvals, vulns, E,
+    nations, bases,
+    cohort_zone_tasks,
     deployment_zones, zone_effects,
     cohort_weapons, weapons,
     bvr_threshold_km: float,
     cruise_kmh: float,
     tos_hours: float,
 ):
-    # 1) map cohort -> coalition, base (first only), zone centroid, first-on-station t
+    """
+    Build a per-cohort view, but carry a 'bases_multi' list so maps can draw one
+    track per allocated base. Availability and first_on are computed across bases.
+    """
     view = {}
     for (name, nation, _af) in cohorts:
         coal = nations[nation]["coalition"]
-        base_items = list(bases.get(nation, {}).items())
-        blat, blon = (None, None)
-        if base_items:
-            _, (blat, blon) = base_items[0]
 
+        # ---- read this cohort's base allocation ----
+        alloc = st.session_state.cohort_base_counts.get(name, {})  # {base_name: qty}
+        nat_bases = bases.get(nation, {})                          # {base_name: (lat,lon)}
+
+        base_recs = []
+        total_q = 0
+        for bname, qty in alloc.items():
+            if qty and bname in nat_bases:
+                blat, blon = nat_bases[bname]  # (lat,lon)
+                base_recs.append({"bname": bname, "latlon": (blat, blon), "qty": int(qty)})
+                total_q += int(qty)
+
+        # Fallback: if nothing allocated, use nation's first base (if any)
+        if not base_recs:
+            bi = list(nat_bases.items())
+            if bi:
+                bname, (blat, blon) = bi[0]
+                base_recs = [{"bname": bname, "latlon": (blat, blon), "qty": counts.get(name, 0)}]
+                total_q = base_recs[0]["qty"]
+
+        # ---- zone selection / centroid ----
         task = cohort_zone_tasks.get(name, {"zone": "— none —", "fraction": 0.0})
         zone = task.get("zone", "— none —")
         frac = float(task.get("fraction", 0.0))
@@ -661,47 +856,67 @@ def build_cohort_view(
             zlon, zlat = zone_centroid(rings)  # (lon, lat)
             zcent = (zlat, zlon)
 
-        # first on-station
+        # ---- first_on (earliest from any allocated base) ----
         t_on = 0.0
-        if zcent and blat is not None:
-            dist_km = haversine_km(blat, blon, zcent[0], zcent[1])
-            t_on = 3600.0 * (dist_km / max(1e-6, cruise_kmh))
+        if zcent and base_recs:
+            t_on = min(
+                3600.0 * (haversine_km(b["latlon"][0], b["latlon"][1], zcent[0], zcent[1]) / max(1e-6, cruise_kmh))
+                for b in base_recs
+            )
 
-        # zone multipliers
+        # ---- zone multipliers ----
         zm, vm = 1.0, 1.0
         if zone and zone != "— none —":
             eff = zone_effects.get(zone, {})
             zm = float(eff.get("E_mult", 1.0))
             vm = float(eff.get("vuln_mult", 1.0))
 
-        # availability from simple cycle
+        # ---- availability aggregated over bases (weight by qty share) ----
         avail = 1.0
-        if zcent and blat is not None:
-            dist_km = haversine_km(blat, blon, zcent[0], zcent[1])
-            t_transit = dist_km / cruise_kmh
-            cycle = max(1e-6, 2*t_transit + tos_hours)
-            on_station_ratio = tos_hours / cycle
+        if zcent and base_recs and total_q > 0:
+            on_station_ratio = 0.0
+            for b in base_recs:
+                w = b["qty"] / total_q
+                dist_km = haversine_km(b["latlon"][0], b["latlon"][1], zcent[0], zcent[1])
+                t_transit_h = dist_km / max(1e-6, cruise_kmh)
+                cycle_h = max(1e-6, 2.0 * t_transit_h + tos_hours)
+                on_station_ratio += w * (tos_hours / cycle_h)
             avail = (1.0 - frac) + frac * on_station_ratio
 
-        # weapon pools → BVR/WVR split
+        # ---- weapons / BVR-WVR buckets (unchanged) ----
         per_ac = cohort_weapons.get(name, {})
         pool_bvr, pool_wvr = {}, {}
         for w, qty_per_ac in per_ac.items():
             total = counts[name] * max(0, int(qty_per_ac))
-            if total <= 0: 
+            if total <= 0:
                 continue
             bucket = classify_weapon(w, bvr_threshold_km, weapons)
             (pool_bvr if bucket == "BVR" else pool_wvr)[w] = total
 
-        # weighted pk/range per bucket
-        bvr_pk   = weighted(pool_bvr, lambda w: weapons.get(w, {}).get("pk", 0.0))
-        bvr_rng  = weighted(pool_bvr, lambda w: weapons.get(w, {}).get("range_km", 0.0))
-        wvr_pk   = weighted(pool_wvr, lambda w: weapons.get(w, {}).get("pk", 0.0))
-        wvr_rng  = weighted(pool_wvr, lambda w: weapons.get(w, {}).get("range_km", 0.0))
+        bvr_pk  = weighted(pool_bvr, lambda w: weapons.get(w, {}).get("pk", 0.0))
+        bvr_rng = weighted(pool_bvr, lambda w: weapons.get(w, {}).get("range_km", 0.0))
+        wvr_pk  = weighted(pool_wvr, lambda w: weapons.get(w, {}).get("pk", 0.0))
+        wvr_rng = weighted(pool_wvr, lambda w: weapons.get(w, {}).get("range_km", 0.0))
+
+        # pick a primary base (nearest to zone) as a reasonable single-base default
+        primary_base = None
+        if base_recs:
+            if zcent:
+                primary_base = min(
+                    (b["latlon"] for b in base_recs),
+                    key=lambda p: haversine_km(p[0], p[1], zcent[0], zcent[1])
+                )
+            else:
+                primary_base = base_recs[0]["latlon"]
 
         view[name] = dict(
             coalition = coal,
-            base = None if blat is None else (blat, blon),
+            nation = nation,
+            base = primary_base,                      # kept for backwards compat
+            bases_multi = [
+                {"bname": b["bname"], "latlon": b["latlon"], "share": (b["qty"]/total_q if total_q > 0 else 0.0)}
+                for b in base_recs
+            ],
             zone = zone,
             zone_centroid = zcent,
             first_on = t_on,
@@ -710,12 +925,12 @@ def build_cohort_view(
             vuln_eff = vulns[name] * vm,
             k = kvals[name],
             N = counts[name],
-            pool_bvr = pool_bvr,
-            pool_wvr = pool_wvr,
+            pool_bvr = pool_bvr, pool_wvr = pool_wvr,
             bvr_pk = bvr_pk, bvr_rng = bvr_rng,
             wvr_pk = wvr_pk, wvr_rng = wvr_rng,
         )
     return view
+
 def simulate_fast(
     cohorts, view, side_tags, 
     horizon, dt,
@@ -747,6 +962,7 @@ def simulate_fast(
             state[name][i] = state[name][i-1]
 
     quiet_clock = 0.0
+    early_stop = st.session_state.get("early_stop_on_quiet", True)
     for i in range(start_idx, steps):
         # carry forward
         for (name,_,_) in cohorts:
@@ -779,7 +995,10 @@ def simulate_fast(
                         vm = v["zone_centroid"]
                         if vm and vz:
                             dists.append(haversine_km(vm[0], vm[1], vz[0], vz[1]))
-            dist_km = np.median(dists) if dists else 0.0
+            dist_km = (min(dists) if dists else 0.0)
+            if "closure_kmh" in st.session_state:
+                t_since_contact = max(0.0, (i - start_idx) * dt)  # seconds
+                dist_km = max(0.0, dist_km - st.session_state["closure_kmh"] * (t_since_contact / 3600.0))
 
             # shot opportunities this tick
             shot_ops = onstation * eng_rate_per_ac_sec * dt
@@ -798,7 +1017,8 @@ def simulate_fast(
             # requested shots by bucket (before ammo caps & salvo size)
             bvr_shots_need = shot_ops * bvr_share * max(0.0, salvo_size)
             wvr_shots_need = shot_ops * wvr_share * max(0.0, salvo_size)
-
+            bvr_fired_by = {me: 0.0 for me in side_tags[side]}
+            wvr_fired_by = {me: 0.0 for me in side_tags[side]}
             # (b) satisfy shots from ammo across cohorts
             # BVR
             bvr_fired = 0.0
@@ -809,6 +1029,7 @@ def simulate_fast(
                     continue
                 fire = min(have, bvr_shots_need)
                 bvr_fired += fire
+                bvr_fired_by[me] += fire
                 # consume proportionally by weapon share
                 if have > 0:
                     for w in list(pool.keys()):
@@ -828,6 +1049,7 @@ def simulate_fast(
                     continue
                 fire = min(have, wvr_shots_need)
                 wvr_fired += fire
+                wvr_fired_by[me] += fire
                 if have > 0:
                     for w in list(pool.keys()):
                         take = fire * (pool[w] / have)
@@ -838,10 +1060,14 @@ def simulate_fast(
 
             # (c) expected kills = missiles * pk * (side-level Êk / shooters)  (simple coupling)
             # ek_sum already includes state * E_eff * k; normalize by onstation to avoid double-count
-            ek_factor = (ek_sum / max(1e-6, onstation)) if onstation > 1e-12 else 0.0
-            exp_kills = (bvr_fired * np.mean([view[m]["bvr_pk"] for m in side_tags[side]] or [0.0])
-                        + wvr_fired * np.mean([view[m]["wvr_pk"] for m in side_tags[side]] or [0.0]))
-            kills_by_side[side] = exp_kills * ek_factor
+            kills_by_side[side] = 0.0
+            for me in side_tags[side]:
+                exp_hits_me = (
+                    bvr_fired_by[me] * max(0.0, float(view[me]["bvr_pk"])) +
+                    wvr_fired_by[me] * max(0.0, float(view[me]["wvr_pk"]))
+                )
+                ek_me = max(0.0, float(view[me]["E_eff"])) * max(0.0, float(view[me]["k"]))
+                kills_by_side[side] += exp_hits_me * ek_me
 
             # (d) reloads for off-station share
             if reload_enabled and reload_rate_per_ac_sec > 0:
@@ -860,23 +1086,27 @@ def simulate_fast(
         # 2) distribute losses to the opposing coalitions (proportional)
         for side in side_tags:
             for foe_side in side_tags:
-                if foe_side == side: 
+                if foe_side == side:
                     continue
-                foe_vuln_sum = sum(state[tag][i] * view[tag]["vuln_eff"] for tag in side_tags[foe_side]) + 1e-12
-                if foe_vuln_sum <= 1e-12:
+                K = max(0.0, float(kills_by_side[side]))
+                if K <= 1e-12:
                     continue
-                # attack pressure share by foe size & effectiveness (same pattern you had)
-                pressure = sum(view[e]["E_eff"] * state[e][i] for e in side_tags[foe_side])
-                denom = sum(state[e][i] for e in side_tags[foe_side]) + 1e-12
-                pressure_share = pressure / denom
-                effective_k = kills_by_side[side] * pressure_share
-                for tag in side_tags[foe_side]:
-                    hits = effective_k * (state[tag][i] * view[tag]["vuln_eff"]) / foe_vuln_sum
-                    loss = hits * view[tag]["vuln_eff"]
+                # Hard cap: can't kill more aircraft than exist on that foe this tick.
+                target_cap = sum(state[tag][i] for tag in side_tags[foe_side])
+                if target_cap <= 1e-12:
+                    continue
+                K = min(K, target_cap)
+                # Weight targets by availability & vulnerability (once).
+                weights = {tag: state[tag][i] * float(view[tag]["vuln_eff"]) for tag in side_tags[foe_side]}
+                W = sum(weights.values())
+                if W <= 1e-12:
+                    continue
+                for tag, w in weights.items():
+                    loss = K * (w / W)
                     state[tag][i] = max(0.0, state[tag][i] - loss)
 
         # 3) early-out if quiet for 30s after contact
-        if sum(kills_by_side.values()) <= 1e-9:
+        if early_stop and sum(kills_by_side.values()) <= 1e-9:
             quiet_clock += dt
             if quiet_clock >= 30.0:
                 for j in range(i+1, steps):
@@ -1343,7 +1573,7 @@ with st.sidebar:
                 
     
     st.header("Global Model parameters")
-    horizon = st.slider("Engagement (s)", 30, 600, 30, 10)
+    horizon = st.slider("Engagement (s)", 100000, 1000000, 100000, 50000)
     dt = 0.2
 
     st.subheader("Logistic remap (E → Ê)")
@@ -1373,8 +1603,11 @@ with st.sidebar:
     # How sharply distance gates BVR (km of transition around the range)
     bvr_geom_soft_km = st.slider("BVR geometry softness (km)",
                              5, 80, 25, 5)
-    tos_hours = st.sidebar.slider("Time on Station (hours)", 0.5, 12.0, 2.0, 0.5)
+    closure_kmh = st.number_input("Aggressive closure (km/h)", 0, 1500, 300, 10, key="knob_closure")
+    st.session_state["closure_kmh"] = closure_kmh
 
+    tos_hours = st.sidebar.slider("Time on Station (hours)", 0.5, 12.0, 2.0, 0.5)
+    st.checkbox("Early-stop after 30 s of no shots", value=True, key="early_stop_on_quiet")
     # convenience
     eng_rate_per_ac_sec = eng_rate_per_ac_min / 60.0
     reload_rate_per_ac_sec = reload_rate_per_ac_min / 60.0
@@ -1447,6 +1680,11 @@ for cname, nation, _af in st.session_state.cohorts:
 
 # 3) Coalition → earliest on-station; t_contact = max(earliest_allied, earliest_opfor)
 side_tags = {}
+for (name, nation, _airframe) in st.session_state.cohorts:
+    coal = st.session_state.nations.get(nation, {}).get("coalition")
+    if coal:
+        side_tags.setdefault(coal, []).append(name)
+
 view = build_cohort_view(
         cohorts = st.session_state.cohorts,
         counts = counts,
@@ -1480,7 +1718,16 @@ T, state = simulate_fast(
     reload_enabled = reload_enabled,
     reload_rate_per_ac_sec = reload_rate_per_ac_sec,
 )
-
+st.session_state.series_counts = {
+    tag: state[tag].astype(float).tolist() for tag in state
+}
+st.session_state.series_alive_frac = {
+    tag: (state[tag] / max(1.0, float(view[tag]["N"]))).astype(float).tolist()
+    for tag in state
+}
+st.session_state.final_counts = {
+    tag: int(round(float(state[tag][-1]))) for tag in state
+}
 def compute_contact_time(view: dict) -> float:
     """
     Earliest engagement time (sec): later of the two coalitions'
@@ -1669,6 +1916,33 @@ for i in range(start_idx, steps):
                 state[tag][i] = max(0.0, state[tag][i] - loss)
 
 
+st.markdown("### ⏱️ Time-series cohort map")
+col_ts1, col_ts2, col_ts3, col_ts4 = st.columns(4)
+with col_ts1:
+    ts_minutes = st.slider("Timeline (min)", 5, 180, 60, 5, key="ts_minutes")
+with col_ts2:
+    ts_dt = st.slider("Δt (sec)", 5, 120, 15, 5, key="ts_dt")
+with col_ts3:
+    ts_speed = st.number_input("Cruise (km/h)", 200, 1400, 900, 10, key="ts_cruise")
+with col_ts4:
+    ts_tos = st.number_input("Time-on-station (h)", 0.0, 6.0, 1.0, 0.25, key="ts_tos")
+
+# Build and show the animated map
+ts_fc = _build_ts_geojson(view, ts_minutes, ts_dt, ts_speed, ts_tos)
+center = (45.0, 34.0)
+for v in view.values():
+    if v.get("zone_centroid"):
+        center = v["zone_centroid"]; break
+m_ts = folium.Map(location=[center[0], center[1]], zoom_start=6, control_scale=True)
+TimestampedGeoJson(
+    data=ts_fc,
+    period=f"PT{max(1, ts_dt)}S",
+    add_last_point=True,
+    transition_time=100,      # ms between frames
+    auto_play=False,
+    loop=False,
+).add_to(m_ts)
+st_folium(m_ts, height=480, use_container_width=True, key="ts_map")
 
 
 # ───────── Plot ─────────
@@ -1689,6 +1963,62 @@ st.pyplot(fig)
 # ───────── Metrics summary ─────────
 # Survivors by coalition (last time step)
 survivors = {coal: sum(state[t][-1] for t in tags) for coal, tags in side_tags.items()}
+# ───────── Nation & Cohort breakouts (start/end) ─────────
+rows = []
+for tag, v in view.items():
+    N0 = int(v.get("N", 0))
+    N1 = _infer_end_count(tag, N0)
+    dN = N1 - N0
+    loss_pct = (0.0 if N0 <= 0 else 100.0 * (N0 - N1) / N0)
+    rows.append({
+        "Coalition": v.get("coalition", ""),
+        "Nation": v.get("nation", ""),
+        "Cohort": tag,
+        "Start N": N0,
+        "End N": N1,
+        "ΔN": dN,
+        "Loss %": round(loss_pct, 1),
+    })
+
+df_break = pd.DataFrame(rows)
+
+# Nation-level breakout
+df_nation = (
+    df_break
+    .groupby(["Coalition", "Nation"], as_index=False)[["Start N", "End N", "ΔN"]]
+    .sum()
+    .assign(**{
+        "Loss %": lambda d: (100.0 * (d["Start N"] - d["End N"]) / d["Start N"]).where(d["Start N"] > 0, 0.0).round(1)
+    })
+    .sort_values(["Coalition", "Nation"])
+)
+
+# Cohort-level breakout
+df_cohort = (
+    df_break
+    .sort_values(["Coalition", "Nation", "Cohort"])
+    .reset_index(drop=True)
+)
+
+st.markdown("### Nation breakout (start → end)")
+st.dataframe(df_nation, use_container_width=True)
+
+st.markdown("### Cohort breakout (start → end)")
+st.dataframe(df_cohort, use_container_width=True)
+
+# Optional: CSV exports
+st.download_button(
+    "⬇️ Download nation breakout (CSV)",
+    df_nation.to_csv(index=False).encode("utf-8"),
+    file_name="nation_breakout.csv",
+    mime="text/csv",
+)
+st.download_button(
+    "⬇️ Download cohort breakout (CSV)",
+    df_cohort.to_csv(index=False).encode("utf-8"),
+    file_name="cohort_breakout.csv",
+    mime="text/csv",
+)
 
 if survivors and any(v > 0 for v in survivors.values()):
     cols = st.columns(max(1, len(survivors)))
@@ -1696,8 +2026,8 @@ if survivors and any(v > 0 for v in survivors.values()):
         col.metric(f"{coal} survivors", f"{val:.1f}")
 else:
     st.info("No coalitions with survivorship to display yet. Check zone assignments and contact distance.")
-    with st.expander("Debug – assignments", expanded=False):
-        st.write("Zone tasks:", st.session_state.cohort_zone_tasks)
-        st.write("First-on-station (s):", {n: view[n]["first_on"] for n,_,_ in st.session_state.cohorts})
-        st.write("Zones by side:", {side: [view[c]["zone"] for c in tags] for side, tags in side_tags.items()})
+with st.expander("Debug – assignments", expanded=False):
+    st.write("Zone tasks:", st.session_state.cohort_zone_tasks)
+    st.write("First-on-station (s):", {n: view[n]["first_on"] for n,_,_ in st.session_state.cohorts})
+    st.write("Zones by side:", {side: [view[c]["zone"] for c in tags] for side, tags in side_tags.items()})
 

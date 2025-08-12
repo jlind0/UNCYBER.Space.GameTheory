@@ -5,3 +5,4 @@ geopandas
 shapely
 networkx
 streamlit_folium
+pandas
